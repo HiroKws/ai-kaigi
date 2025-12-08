@@ -1,0 +1,5 @@
+{
+  "name": "AI Brainstorm Board",
+  "description": "A virtual meeting room where multiple AI personas discuss your topic and automatically organize ideas on a whiteboard.",
+  "requestFramePermissions": []
+}
