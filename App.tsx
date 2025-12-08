@@ -270,9 +270,13 @@ const App: React.FC = () => {
                           {t.moderator}
                       </div>
                       {/* Moderator Bubble */}
-                      {getLatestMessage('ai-moderator') && (
+                      {(isModeratorSpeaking || getLatestMessage('ai-moderator')) && (
                           <div className="absolute top-20 w-[400px] bg-white dark:bg-indigo-900/90 text-gray-800 dark:text-indigo-100 p-5 rounded-2xl text-base shadow-xl text-center border border-indigo-100 dark:border-indigo-500/50 animate-in fade-in zoom-in slide-in-from-top-4 z-50">
-                              {getLatestMessage('ai-moderator')}
+                              {isModeratorSpeaking ? (
+                                  <span className="text-gray-400 dark:text-gray-400 italic animate-pulse">{t.thinking}</span>
+                              ) : (
+                                  getLatestMessage('ai-moderator')
+                              )}
                           </div>
                       )}
                   </div>
@@ -287,6 +291,9 @@ const App: React.FC = () => {
                           const isHandRaised = handRaisedQueue.includes(agent.id);
                           const activeModel = agentActiveModels[agent.id];
                           const isDowngraded = activeModel && activeModel !== (agent.model || DEFAULT_MODEL);
+                          
+                          // Show bubble if speaking OR has a previous message
+                          const showBubble = isSpeaking || latestMsg;
 
                           return (
                               <div key={agent.id} className={`group relative flex items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? 'translate-x-4 scale-105' : 'opacity-80 hover:opacity-100'}`}>
@@ -319,13 +326,17 @@ const App: React.FC = () => {
                                       )}
                                   </div>
                                   
-                                  {latestMsg && (
+                                  {showBubble && (
                                       <div className={`absolute left-14 md:left-24 ml-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-4 lg:p-4 rounded-3xl rounded-tl-none shadow-xl text-sm lg:text-base z-30 
                                           w-[calc(45vw_-_5rem)] min-w-[calc(45vw_-_5rem)] max-w-none
                                           lg:w-[calc(33vw_-_9rem)] lg:min-w-0 lg:max-w-none
                                           border-2 ${borderClass} animate-in fade-in slide-in-from-left-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
                                           <span className={`block font-bold text-xs mb-1 ${textClass}`}>{agent.name}</span>
-                                          {latestMsg}
+                                          {isSpeaking ? (
+                                              <span className="text-gray-400 dark:text-gray-500 italic animate-pulse text-sm block mt-1">{t.thinking}</span>
+                                          ) : (
+                                              latestMsg
+                                          )}
                                       </div>
                                   )}
                               </div>
@@ -343,6 +354,9 @@ const App: React.FC = () => {
                           const isHandRaised = handRaisedQueue.includes(agent.id);
                           const activeModel = agentActiveModels[agent.id];
                           const isDowngraded = activeModel && activeModel !== (agent.model || DEFAULT_MODEL);
+                          
+                          // Show bubble if speaking OR has a previous message
+                          const showBubble = isSpeaking || latestMsg;
 
                           return (
                               <div key={agent.id} className={`group relative flex flex-row-reverse items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? '-translate-x-4 scale-105' : 'opacity-80 hover:opacity-100'}`}>
@@ -375,13 +389,17 @@ const App: React.FC = () => {
                                       )}
                                   </div>
                                   
-                                  {latestMsg && (
+                                  {showBubble && (
                                       <div className={`absolute right-14 md:right-24 mr-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-4 lg:p-4 rounded-3xl rounded-tr-none shadow-xl text-sm lg:text-base z-30 
                                           w-[calc(45vw_-_5rem)] min-w-[calc(45vw_-_5rem)] max-w-none
                                           lg:w-[calc(33vw_-_9rem)] lg:min-w-0 lg:max-w-none
                                           border-2 ${borderClass} animate-in fade-in slide-in-from-right-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
                                           <span className={`block font-bold text-xs mb-1 text-right ${textClass}`}>{agent.name}</span>
-                                          {latestMsg}
+                                          {isSpeaking ? (
+                                              <span className="text-gray-400 dark:text-gray-500 italic animate-pulse text-sm block mt-1">{t.thinking}</span>
+                                          ) : (
+                                              latestMsg
+                                          )}
                                       </div>
                                   )}
                               </div>

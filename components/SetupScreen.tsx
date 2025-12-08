@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Agent, MeetingMode, SavedConfig, Attachment, TeamTemplate } from '../types';
 import { getMeetingBackend } from '../services/geminiService';
 import { Users, Wand2, Save, Download, Trash2, Play, AlertCircle, ChevronLeft, Globe, ArrowRight, Zap, Bot, WifiOff, FileText, X, Plus, Paperclip, Upload, ChevronDown, Shield, Copy, Heart, Cpu, AlertTriangle, Bug } from 'lucide-react';
-import { AGENTS, LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, PRESET_TEAMS } from '../constants';
+import { AGENTS, LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL } from '../constants';
+import { PRESET_TEAMS } from '../teams';
 import { ErrorBanner } from './ErrorBanner';
 
 interface SetupScreenProps {
