@@ -1,3 +1,4 @@
+
 export interface Attachment {
   name: string;
   mimeType: string;
@@ -65,7 +66,7 @@ export interface UsageStats {
   byModel: Record<string, ModelUsage>;
 }
 
-export type MeetingMode = 'multi-agent' | 'simulation' | 'offline';
+export type MeetingMode = 'multi-agent' | 'offline';
 
 export interface ModeratorResponse {
   nextSpeakerId: string;
@@ -78,21 +79,61 @@ export interface GenerationResult {
     usedModel: string;
 }
 
+export interface NegotiationResult {
+    status: 'ACCEPTED' | 'CLARIFY';
+    text: string;
+    refinedGoal?: string; // The concrete goal extracted from the conversation
+    usedModel: string;
+}
+
+export interface HandRaiseSignal {
+    agentId: string;
+    type: 'OBJECTION' | 'SUPPORT' | 'COMMENT' | 'SYNTHESIS' | 'SOLUTION';
+    reason: string;
+}
+
+export interface ModerationSettings {
+  sixThinkingHats: boolean; // Thinking Mode Enforcement
+  fistToFive: boolean;      // Consensus Check
+  parkingLot: boolean;      // Off-topic Management
+  reframing: boolean;       // Sandwich Intervention & Reframing
+}
+
 // Interface to abstract the logic (Mock vs Real API)
 export interface MeetingBackend {
   mode: MeetingMode;
   generateTeam(topic: string, lang: string, files: Attachment[], baseModel: string): Promise<Agent[]>;
-  // Returns texts but implementation might handle fallback internally. 
-  // For simplicity in batch, we won't return individual models for setup, but we could.
-  // Updated to return objects to track model usage per agent if needed, but keeping string[] for simplicity in setup.
+  // Deprecated for pre-gen, but kept for interface compatibility if needed, or we can use it for batch
   generateOpeningStatements(topic: string, agents: Agent[], lang: string, files: Attachment[], baseModel: string): Promise<GenerationResult[]>;
   
-  generateModeratorTurn(topic: string, history: Message[], agents: Agent[], lang: string, files: Attachment[], model?: string, handRaisedAgentIds?: string[]): Promise<ModeratorResponse & { usedModel?: string }>;
+  // New method for on-the-fly intro generation
+  generateAgentIntro(agent: Agent, topic: string, lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult>;
+
+  // New method for Goal Negotiation - Now accepts settings to announce them
+  negotiateGoal(topic: string, history: Message[], moderator: Agent, lang: string, model: string, settings?: ModerationSettings, onPrompt?: (prompt: string) => void): Promise<NegotiationResult>;
+
+  // Updated to accept HandRaiseSignal[] and ModerationSettings
+  generateModeratorTurn(
+      topic: string, 
+      history: Message[], 
+      agents: Agent[], 
+      lang: string, 
+      files: Attachment[], 
+      model?: string, 
+      handRaisedSignals?: HandRaiseSignal[], 
+      settings?: ModerationSettings, 
+      meetingStage?: 'divergence' | 'groan' | 'convergence',
+      onPrompt?: (prompt: string) => void
+  ): Promise<ModeratorResponse & { usedModel?: string }>;
   
-  generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[]): Promise<GenerationResult>;
+  generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult>;
   
-  // New method to check reactions
-  checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string): Promise<string[]>;
+  // New method to check reactions - Returns structured signals now
+  checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]>;
+  
+  // New method to generate meeting minutes
+  generateMinutes(topic: string, history: Message[], agents: Agent[], lang: string, model: string): Promise<string>;
+
   updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, isDark: boolean): Promise<WhiteboardData>;
   getStats(): UsageStats;
 }

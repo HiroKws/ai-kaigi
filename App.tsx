@@ -1,13 +1,16 @@
+
+
 import React, { useState, useMemo, useEffect } from 'react';
-import { Play, Pause, Send, MessageSquare, Mic2, User, FileText, Paperclip, X, Eye, Save, Hand, ShieldAlert } from 'lucide-react';
-import { LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL } from './constants';
-import { Agent, MeetingMode, Attachment, SavedConfig, UsageStats } from './types';
+import { Play, Pause, Send, MessageSquare, Mic2, User, FileText, Paperclip, X, Eye, Save, Hand, ShieldAlert, Download, FileCheck, Loader2 } from 'lucide-react';
+import { LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, DEFAULT_MODERATION_SETTINGS } from './constants';
+import { Agent, MeetingMode, Attachment, SavedConfig, UsageStats, ModerationSettings } from './types';
 import { getMeetingBackend } from './services/geminiService';
 import { useMeeting } from './hooks/useMeeting';
 import { ChatLog } from './components/ChatLog';
 import { SetupScreen } from './components/SetupScreen';
 import { ErrorBanner } from './components/ErrorBanner';
 import { StatsDisplay } from './components/StatsDisplay';
+import { DebugLogger } from './utils/debugLogger';
 
 const App: React.FC = () => {
   // Global Settings
@@ -25,6 +28,9 @@ const App: React.FC = () => {
   const [view, setView] = useState<'setup' | 'meeting'>('setup');
   const [showLog, setShowLog] = useState(false); // Toggle between Room view and Log view
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [showEndConfirmModal, setShowEndConfirmModal] = useState(false);
+  const [isGeneratingMinutes, setIsGeneratingMinutes] = useState(false);
+  
   const [saveName, setSaveName] = useState('');
   const [isMobile, setIsMobile] = useState(false);
   const [isBoardHovered, setIsBoardHovered] = useState(false);
@@ -48,14 +54,16 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [backend]);
 
+  const [startParams, setStartParams] = useState<{
+      topic: string, agents: Agent[], files: Attachment[], model: string, settings: ModerationSettings
+  } | null>(null);
+
   // Hook handles all meeting logic
   const {
     agents, messages, whiteboardData,
-    isActive, isPaused, setIsPaused, error, currentSpeakerId, handRaisedQueue, agentActiveModels,
-    startMeeting, stopMeeting, togglePause, addMessage, addFiles
-  } = useMeeting(backend, langCode, debugMode);
-
-  const [pendingStart, setPendingStart] = useState<{topic: string, agents: Agent[], files: Attachment[], model: string} | null>(null);
+    isActive, isPaused, setIsPaused, isWaitingForUser, error, currentSpeakerId, handRaisedQueue, agentActiveModels, debugPrompt,
+    startMeeting, stopMeeting, togglePause, addMessage, addFiles, generateMinutes
+  } = useMeeting(backend, langCode, debugMode, startParams?.settings || DEFAULT_MODERATION_SETTINGS);
 
   // Handle Resize for Mobile View
   useEffect(() => {
@@ -67,10 +75,12 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  const handleStartMeeting = (newTopic: string, selectedAgents: Agent[], selectedMode: MeetingMode, initialFiles: Attachment[], defaultModel: string) => {
+  const handleStartMeeting = (newTopic: string, selectedAgents: Agent[], selectedMode: MeetingMode, initialFiles: Attachment[], defaultModel: string, modSettings: ModerationSettings) => {
     setMode(selectedMode);
     setView('meeting');
-    setPendingStart({ topic: newTopic, agents: selectedAgents, files: initialFiles, model: defaultModel });
+    setStartParams({ topic: newTopic, agents: selectedAgents, files: initialFiles, model: defaultModel, settings: modSettings });
+    // Clear previous logs when starting a new fresh meeting
+    DebugLogger.clear();
   };
 
   const handleSaveTeam = () => {
@@ -99,11 +109,11 @@ const App: React.FC = () => {
   };
 
   React.useEffect(() => {
-    if (pendingStart && view === 'meeting') {
-      startMeeting(pendingStart.topic, pendingStart.agents, pendingStart.files, pendingStart.model);
-      setPendingStart(null);
+    if (startParams && view === 'meeting') {
+      startMeeting(startParams.topic, startParams.agents, startParams.files, startParams.model);
+      // We purposefully don't clear startParams here to keep settings accessible
     }
-  }, [pendingStart, view, startMeeting]);
+  }, [startParams, view, startMeeting]);
 
   const handleUserMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,10 +155,40 @@ const App: React.FC = () => {
       });
   };
 
-  const endMeeting = () => {
+  const requestEndMeeting = () => {
+    setIsPaused(true); // Pause meeting while dialog is open
+    setShowEndConfirmModal(true);
+  };
+  
+  const handleEndWithMinutes = async () => {
+      setIsGeneratingMinutes(true);
+      try {
+          const report = await generateMinutes();
+          // Trigger download
+          const blob = new Blob([report], { type: 'text/markdown' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Meeting_Minutes_${Date.now()}.md`;
+          a.click();
+          URL.revokeObjectURL(url);
+          
+          finalizeEndMeeting();
+      } catch (e) {
+          console.error("Failed to generate minutes", e);
+          alert("Failed to generate minutes, but ending meeting.");
+          finalizeEndMeeting();
+      } finally {
+          setIsGeneratingMinutes(false);
+      }
+  };
+
+  const finalizeEndMeeting = () => {
     stopMeeting();
     setView('setup');
     setShowLog(false);
+    setShowEndConfirmModal(false);
+    setStartParams(null); // Reset
   };
 
   // Helper to get latest message for a specific agent
@@ -185,6 +225,14 @@ const App: React.FC = () => {
   const rightAgents = agents.filter((_, i) => i % 2 !== 0);
   const isModeratorSpeaking = currentSpeakerId === 'ai-moderator';
 
+  // Debug Prompt Display Helper
+  const DebugPromptBox = ({ prompt }: { prompt: string }) => (
+      <div className="text-[10px] font-mono text-left bg-black/5 dark:bg-black/20 p-2 rounded border border-gray-200 dark:border-gray-600 max-h-32 overflow-y-auto whitespace-pre-wrap">
+          <span className="font-bold block text-blue-600 dark:text-blue-400 mb-1">PROMPT:</span>
+          {prompt}
+      </div>
+  );
+
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans transition-colors duration-300 relative overflow-hidden">
       
@@ -212,7 +260,13 @@ const App: React.FC = () => {
                   {!isMobile && (
                       <button onClick={() => setShowLog(!showLog)} className="bg-white/80 dark:bg-black/40 backdrop-blur-md border border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-white px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium transition-colors shadow-sm">
                           {showLog ? <Eye size={16} /> : <MessageSquare size={16} />}
-                          {showLog ? t.viewRoom : t.viewLog}
+                          {showLog ? t.viewRoom : t.viewList}
+                      </button>
+                  )}
+                  {debugMode && (
+                      <button onClick={() => DebugLogger.downloadLogs()} className="bg-gray-900 dark:bg-black/60 text-white backdrop-blur-md border border-gray-700 px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium transition-colors shadow-sm hover:bg-gray-800" title="Download prompt_logs.txt">
+                          <Download size={16} />
+                          {t.downloadLogs}
                       </button>
                   )}
               </div>
@@ -221,7 +275,7 @@ const App: React.FC = () => {
                   <button onClick={() => setShowSaveModal(true)} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-full text-sm font-bold transition-colors backdrop-blur-md flex items-center gap-2 shadow-sm">
                       <Save size={16} /> <span className="hidden sm:inline">{t.saveTeam}</span>
                   </button>
-                  <button onClick={endMeeting} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-colors backdrop-blur-md shadow-sm">
+                  <button onClick={requestEndMeeting} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-colors backdrop-blur-md shadow-sm">
                       {t.endMeeting}
                   </button>
               </div>
@@ -260,10 +314,10 @@ const App: React.FC = () => {
                   </div>
 
                   {/* TOP: Moderator */}
-                  <div className={`absolute top-16 left-1/2 -translate-x-1/2 flex flex-col items-center z-20 transition-all duration-500 ${isModeratorSpeaking ? 'scale-110' : 'opacity-70 scale-90'}`}>
-                      <div className={`relative w-16 h-16 rounded-full bg-indigo-100 dark:bg-indigo-900 border-2 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)] ${isModeratorSpeaking ? 'border-indigo-500' : 'border-indigo-200 dark:border-indigo-800'}`}>
+                  <div className={`absolute top-16 left-1/2 -translate-x-1/2 flex flex-col items-center transition-all duration-500 ${isModeratorSpeaking ? 'scale-110 z-50' : 'opacity-70 scale-90 z-20'}`}>
+                      <div className={`relative w-16 h-16 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all duration-300 ${isModeratorSpeaking ? 'border-4 border-indigo-500' : 'border-2 border-indigo-200 dark:border-indigo-800'}`}>
                           {/* Thinking Spinner for Moderator */}
-                          {isModeratorSpeaking && <div className="absolute inset-0 rounded-full border-2 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
+                          {isModeratorSpeaking && <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
                           <Mic2 size={32} className="text-indigo-600 dark:text-indigo-200" />
                       </div>
                       <div className="mt-2 bg-white/80 dark:bg-black/60 backdrop-blur px-3 py-1 rounded-full text-xs font-bold text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 shadow-sm">
@@ -273,7 +327,11 @@ const App: React.FC = () => {
                       {(isModeratorSpeaking || getLatestMessage('ai-moderator')) && (
                           <div className="absolute top-20 w-[400px] bg-white dark:bg-indigo-900/90 text-gray-800 dark:text-indigo-100 p-5 rounded-2xl text-base shadow-xl text-center border border-indigo-100 dark:border-indigo-500/50 animate-in fade-in zoom-in slide-in-from-top-4 z-50">
                               {isModeratorSpeaking ? (
-                                  <span className="text-gray-400 dark:text-gray-400 italic animate-pulse">{t.thinking}</span>
+                                  debugMode && debugPrompt ? (
+                                      <DebugPromptBox prompt={debugPrompt} />
+                                  ) : (
+                                      <span className="text-gray-400 dark:text-gray-400 italic animate-pulse">{t.thinking}</span>
+                                  )
                               ) : (
                                   getLatestMessage('ai-moderator')
                               )}
@@ -296,7 +354,7 @@ const App: React.FC = () => {
                           const showBubble = isSpeaking || latestMsg;
 
                           return (
-                              <div key={agent.id} className={`group relative flex items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? 'translate-x-4 scale-105' : 'opacity-80 hover:opacity-100'}`}>
+                              <div key={agent.id} className={`group relative flex items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? 'translate-x-4 scale-105 z-50' : 'opacity-80 hover:opacity-100 z-20'}`}>
                                   {/* Tooltip */}
                                   <div className="absolute left-20 ml-1 w-64 p-3 bg-white dark:bg-black/90 text-gray-800 dark:text-gray-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-md">
                                       <div className="font-bold text-gray-900 dark:text-white mb-1 border-b border-gray-200 dark:border-gray-700 pb-1">{agent.name}</div>
@@ -333,7 +391,11 @@ const App: React.FC = () => {
                                           border-2 ${borderClass} animate-in fade-in slide-in-from-left-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
                                           <span className={`block font-bold text-xs mb-1 ${textClass}`}>{agent.name}</span>
                                           {isSpeaking ? (
-                                              <span className="text-gray-400 dark:text-gray-500 italic animate-pulse text-sm block mt-1">{t.thinking}</span>
+                                              debugMode && debugPrompt ? (
+                                                  <DebugPromptBox prompt={debugPrompt} />
+                                              ) : (
+                                                  <span className="text-gray-400 dark:text-gray-500 italic animate-pulse text-sm block mt-1">{t.thinking}</span>
+                                              )
                                           ) : (
                                               latestMsg
                                           )}
@@ -359,7 +421,7 @@ const App: React.FC = () => {
                           const showBubble = isSpeaking || latestMsg;
 
                           return (
-                              <div key={agent.id} className={`group relative flex flex-row-reverse items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? '-translate-x-4 scale-105' : 'opacity-80 hover:opacity-100'}`}>
+                              <div key={agent.id} className={`group relative flex flex-row-reverse items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? '-translate-x-4 scale-105 z-50' : 'opacity-80 hover:opacity-100 z-20'}`}>
                                   {/* Tooltip */}
                                   <div className="absolute right-20 mr-1 w-64 p-3 bg-white dark:bg-black/90 text-gray-800 dark:text-gray-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-md text-right">
                                       <div className="font-bold text-gray-900 dark:text-white mb-1 border-b border-gray-200 dark:border-gray-700 pb-1">{agent.name}</div>
@@ -396,7 +458,11 @@ const App: React.FC = () => {
                                           border-2 ${borderClass} animate-in fade-in slide-in-from-right-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
                                           <span className={`block font-bold text-xs mb-1 text-right ${textClass}`}>{agent.name}</span>
                                           {isSpeaking ? (
-                                              <span className="text-gray-400 dark:text-gray-500 italic animate-pulse text-sm block mt-1">{t.thinking}</span>
+                                              debugMode && debugPrompt ? (
+                                                  <DebugPromptBox prompt={debugPrompt} />
+                                              ) : (
+                                                  <span className="text-gray-400 dark:text-gray-500 italic animate-pulse text-sm block mt-1">{t.thinking}</span>
+                                              )
                                           ) : (
                                               latestMsg
                                           )}
@@ -411,9 +477,9 @@ const App: React.FC = () => {
 
             {/* LOG VIEW */}
             {(showLog || isMobile) && (
-              <div className="flex-1 z-10 p-4 pt-16 pb-32 overflow-hidden flex flex-col items-center">
+              <div className="flex-1 z-10 p-4 pt-16 pb-32 overflow-hidden flex flex-col items-center w-full">
                   <div className="w-full max-w-3xl flex-1 bg-white/90 dark:bg-gray-800/90 backdrop-blur-md rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col shadow-xl mb-4">
-                      <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 font-bold text-center text-gray-700 dark:text-gray-200">
+                      <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 font-bold text-center text-gray-700 dark:text-gray-200 shrink-0">
                           Session Log
                       </div>
                       <ChatLog messages={messages} agents={agents} />
@@ -450,8 +516,15 @@ const App: React.FC = () => {
                                 </div>
                             )}
 
-                            <div className="w-16 h-16 rounded-full bg-indigo-600 border-4 border-gray-100 dark:border-gray-900 shadow-2xl flex items-center justify-center text-white transform hover:scale-105 transition-transform cursor-default">
-                                <User size={32} />
+                            <div className={`relative w-16 h-16 rounded-full bg-indigo-600 border-4 ${isWaitingForUser ? 'border-transparent' : 'border-gray-100 dark:border-gray-900'} shadow-2xl flex items-center justify-center text-white transform hover:scale-105 transition-transform cursor-default`}>
+                                {isWaitingForUser && (
+                                    <>
+                                       {/* Outer Spinner for Visibility */}
+                                       <div className="absolute -inset-1 rounded-full border-4 border-indigo-200 dark:border-indigo-900 z-0" />
+                                       <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-600 dark:border-t-white border-r-transparent border-b-transparent border-l-transparent animate-spin z-10" />
+                                    </>
+                                )}
+                                <User size={32} className="relative z-20" />
                             </div>
                         </div>
                     )}
@@ -515,6 +588,46 @@ const App: React.FC = () => {
                       <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Cancel</button>
                       <button onClick={handleSaveTeam} disabled={!saveName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">Save</button>
                   </div>
+              </div>
+          </div>
+      )}
+
+      {/* End Meeting Confirmation Modal */}
+      {showEndConfirmModal && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700 scale-100">
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="font-bold text-lg text-gray-900 dark:text-white flex items-center gap-2">
+                         <FileCheck className="text-indigo-500" size={24}/>
+                         {t.endMeetingConfirmTitle}
+                      </h3>
+                      {!isGeneratingMinutes && (
+                          <button onClick={() => setShowEndConfirmModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={20}/></button>
+                      )}
+                  </div>
+                  <p className="text-gray-600 dark:text-gray-300 mb-6">{t.endMeetingConfirmDesc}</p>
+                  
+                  {isGeneratingMinutes ? (
+                      <div className="flex flex-col items-center justify-center py-4 gap-3 text-indigo-600 dark:text-indigo-400">
+                          <Loader2 size={32} className="animate-spin" />
+                          <span className="font-semibold text-sm">{t.generatingMinutes}</span>
+                      </div>
+                  ) : (
+                      <div className="flex flex-col gap-3">
+                          <button 
+                              onClick={handleEndWithMinutes} 
+                              className="w-full px-4 py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 font-bold shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2"
+                          >
+                              <FileText size={18} /> {t.generateMinutes}
+                          </button>
+                          <button 
+                              onClick={finalizeEndMeeting} 
+                              className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 font-medium"
+                          >
+                              {t.justEnd}
+                          </button>
+                      </div>
+                  )}
               </div>
           </div>
       )}

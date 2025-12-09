@@ -1,13 +1,14 @@
+
 import React, { useState, useEffect, useRef } from 'react';
-import { Agent, MeetingMode, SavedConfig, Attachment, TeamTemplate } from '../types';
+import { Agent, MeetingMode, SavedConfig, Attachment, TeamTemplate, ModerationSettings } from '../types';
 import { getMeetingBackend } from '../services/geminiService';
-import { Users, Wand2, Save, Download, Trash2, Play, AlertCircle, ChevronLeft, Globe, ArrowRight, Zap, Bot, WifiOff, FileText, X, Plus, Paperclip, Upload, ChevronDown, Shield, Copy, Heart, Cpu, AlertTriangle, Bug } from 'lucide-react';
-import { AGENTS, LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL } from '../constants';
+import { Users, Wand2, Save, Download, Trash2, Play, AlertCircle, ChevronLeft, Globe, ArrowRight, Zap, Bot, WifiOff, FileText, X, Plus, Paperclip, Upload, ChevronDown, Shield, Copy, Heart, Cpu, AlertTriangle, Bug, StickyNote, Settings2, Diamond, Hand, MessageSquare, ListFilter, MessageCircle, Check } from 'lucide-react';
+import { AGENTS, LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, DEFAULT_MODERATION_SETTINGS } from '../constants';
 import { PRESET_TEAMS } from '../teams';
 import { ErrorBanner } from './ErrorBanner';
 
 interface SetupScreenProps {
-  onStartMeeting: (topic: string, agents: Agent[], mode: MeetingMode, files: Attachment[], defaultModel: string) => void;
+  onStartMeeting: (topic: string, agents: Agent[], mode: MeetingMode, files: Attachment[], defaultModel: string, modSettings: ModerationSettings) => void;
   langCode: string;
   setLangCode: (code: string) => void;
   debugMode: boolean;
@@ -34,12 +35,50 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   const [saveName, setSaveName] = useState('');
   const [isPresetDropdownOpen, setIsPresetDropdownOpen] = useState(false);
 
+  // Text Note Modal State
+  const [isTextModalOpen, setIsTextModalOpen] = useState(false);
+  const [noteTitle, setNoteTitle] = useState('');
+  const [noteContent, setNoteContent] = useState('');
+
+  // Moderation Settings State
+  const [modSettings, setModSettings] = useState<ModerationSettings>(DEFAULT_MODERATION_SETTINGS);
+  const [isModSettingsOpen, setIsModSettingsOpen] = useState(false);
+
   // Language Menu Logic
   const [isLangMenuOpen, setIsLangMenuOpen] = useState(false);
   const langMenuTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const t = TRANSLATIONS[langCode] || TRANSLATIONS['en'];
   const isOffline = mode === 'offline';
+
+  // --- MODEL VALIDATION LOGIC ---
+  const validateModel = (modelId: string | undefined): string => {
+      if (!modelId) return DEFAULT_MODEL;
+      const exists = MODEL_OPTIONS.some(opt => opt.id === modelId);
+      if (!exists) {
+          console.warn(`Invalid/Deprecated model found: ${modelId}. Reverting to default.`);
+          return DEFAULT_MODEL;
+      }
+      return modelId;
+  };
+
+  // Validate initial agents on mount
+  useEffect(() => {
+      const validatedAgents = agents.map(a => ({
+          ...a,
+          model: validateModel(a.model)
+      }));
+      // Only update if changes were made to avoid loops, simplistic check
+      if (JSON.stringify(validatedAgents) !== JSON.stringify(agents)) {
+          setAgents(validatedAgents);
+      }
+      
+      // Validate selected global model
+      const validGlobal = validateModel(selectedModel);
+      if (validGlobal !== selectedModel) {
+          setSelectedModel(validGlobal);
+      }
+  }, []);
 
   useEffect(() => {
     const saved = localStorage.getItem('meeting_saved_configs');
@@ -84,6 +123,27 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       });
   };
 
+  const handleAddTextNote = () => {
+    if (!noteContent.trim()) return;
+
+    // Use a trick to properly encode Unicode string to Base64
+    const encodedData = btoa(unescape(encodeURIComponent(noteContent)));
+    const dataUrl = `data:text/plain;base64,${encodedData}`;
+
+    const newFile: Attachment = {
+        name: noteTitle.trim() || `Note ${files.length + 1}.txt`,
+        mimeType: 'text/plain',
+        data: dataUrl
+    };
+
+    setFiles(prev => [...prev, newFile]);
+    
+    // Reset and close
+    setNoteContent('');
+    setNoteTitle('');
+    setIsTextModalOpen(false);
+  };
+
   const removeFile = (index: number) => {
       setFiles(prev => prev.filter((_, i) => i !== index));
   };
@@ -97,7 +157,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
     if (mode === 'offline') {
        const backend = getBackend('offline');
        const mockTeam = await backend.generateTeam(topic, langCode, [], selectedModel);
-       onStartMeeting(topic, mockTeam, 'offline', files, selectedModel);
+       onStartMeeting(topic, mockTeam, 'offline', files, selectedModel, modSettings);
        return;
     }
 
@@ -108,37 +168,20 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
     try {
         const backend = getBackend(mode);
         // Step 1: Generate Team Structure (using default/base model)
-        // If fallback occurs here, newAgents will contain the Downgraded Model in their .model property
         const newAgents = await backend.generateTeam(topic, langCode, files, selectedModel);
         
         if (!newAgents || newAgents.length === 0) {
              throw new Error("No agents generated");
         }
 
-        // Step 2: If Multi-Agent, RE-GENERATE opening statements individually.
-        if (mode === 'multi-agent') {
-            // Ensure we use the model attached to the agent (which might be downgraded)
-            const agentsForGen = newAgents.map(a => ({ 
-                ...a, 
-                initialMessage: undefined, 
-                // Fallback to selectedModel only if for some reason agent.model is missing
-                model: a.model || selectedModel 
-            }));
-            
-            // Generate opening statements using the specific agent models
-            const greetings = await backend.generateOpeningStatements(topic, agentsForGen, langCode, files, selectedModel);
-            
-            const finalAgents = agentsForGen.map((a, i) => ({
-                ...a,
-                // Extract .text and .usedModel
-                initialMessage: greetings[i]?.text || "",
-                initialMessageModel: greetings[i]?.usedModel 
-            }));
-            
-            onStartMeeting(topic, finalAgents, mode, files, selectedModel);
-        } else {
-            onStartMeeting(topic, newAgents, mode, files, selectedModel);
-        }
+        // Ensure models are attached and valid
+        const finalAgents = newAgents.map(a => ({ 
+            ...a, 
+            initialMessage: undefined, 
+            model: validateModel(a.model || selectedModel) 
+        }));
+        
+        onStartMeeting(topic, finalAgents, mode, files, selectedModel, modSettings);
 
     } catch (e: any) {
         console.error(e);
@@ -150,7 +193,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   };
 
   const startWithDefaults = () => {
-      onStartMeeting(topic, AGENTS, 'offline', files, selectedModel);
+      onStartMeeting(topic, AGENTS, 'offline', files, selectedModel, modSettings);
   };
 
   const goToCustomize = () => {
@@ -159,7 +202,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
      setStep('customize');
      const updatedAgents = agents.map(a => ({
          ...a,
-         model: a.model || selectedModel
+         model: validateModel(a.model || selectedModel)
      }));
      setAgents(updatedAgents);
   };
@@ -174,7 +217,12 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
     try {
       const backend = getBackend(mode);
       const newAgents = await backend.generateTeam(topic, langCode, files, selectedModel);
-      setAgents(newAgents);
+      // Validate models of generated agents
+      const validatedAgents = newAgents.map(a => ({
+          ...a,
+          model: validateModel(a.model)
+      }));
+      setAgents(validatedAgents);
     } catch (e: any) {
       setErrorMsg(e.message);
     } finally {
@@ -186,7 +234,6 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
     const newAgents = [...agents];
     if (newAgents[index]) {
         newAgents[index] = { ...newAgents[index], [field]: value };
-        // Clear initialMessage if user edits role/instruction/name/model to force regeneration
         if (field === 'role' || field === 'systemInstruction' || field === 'name' || field === 'model' || field === 'interest') {
             newAgents[index].initialMessage = undefined;
         }
@@ -198,6 +245,20 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       const newAgents = [...agents];
       newAgents.splice(index, 1);
       setAgents(newAgents);
+  };
+
+  const handleAddAgent = () => {
+      const colors = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500'];
+      const newAgent: Agent = {
+          id: `custom-${Date.now()}`,
+          name: "New Agent",
+          role: "Expert",
+          systemInstruction: "You are a helpful expert.",
+          interest: "General",
+          avatarColor: colors[agents.length % colors.length],
+          model: selectedModel
+      };
+      setAgents([...agents, newAgent]);
   };
 
   const applyModelToAllAgents = () => {
@@ -228,7 +289,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   };
 
   const handleLoadConfig = (config: SavedConfig | TeamTemplate) => {
-      setAgents(config.agents);
+      // Force update all agents in the template to use the currently selected global model
+      // OR sanitize their existing models
+      const agentsWithValidModels = config.agents.map(a => ({
+          ...a,
+          model: validateModel(a.model) // Ensure no deprecated models are loaded
+      }));
+
+      setAgents(agentsWithValidModels);
       setStep('customize');
       setIsPresetDropdownOpen(false);
   };
@@ -259,7 +327,12 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
           try {
               const json = JSON.parse(ev.target?.result as string);
               if (json.agents) {
-                  setAgents(json.agents);
+                  // Validate imported agents
+                  const importedAgents = json.agents.map((a: Agent) => ({
+                      ...a,
+                      model: validateModel(a.model)
+                  }));
+                  setAgents(importedAgents);
               }
               if (json.topic) {
                   setTopic(json.topic);
@@ -277,40 +350,16 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   const handleStartCustomMeeting = async () => {
       if (!isValidTeamSize) return;
       
-      let finalAgents = [...agents];
+      const finalAgents = agents.map(a => ({
+          ...a,
+          initialMessage: undefined,
+          model: validateModel(a.model || selectedModel)
+      }));
       
-      if (mode === 'multi-agent') {
-          setIsGenerating(true);
-          try {
-              const backend = getBackend(mode);
-              const agentsForGen = agents.map(a => ({
-                  ...a,
-                  initialMessage: undefined 
-              }));
-
-              const greetings = await backend.generateOpeningStatements(topic, agentsForGen, langCode, files, selectedModel);
-              
-              finalAgents = agents.map((agent, i) => ({
-                  ...agent,
-                  // Extract .text and .usedModel
-                  initialMessage: greetings[i]?.text || "",
-                  initialMessageModel: greetings[i]?.usedModel
-              }));
-              
-              onStartMeeting(topic, finalAgents, mode, files, selectedModel);
-          } catch (e: any) {
-              console.error("Failed to generate custom greetings", e);
-              setErrorMsg(e.message || "Failed to generate greetings");
-              // onStartMeeting(topic, agents, mode, files, selectedModel); // Don't start automatically on error, let user see it
-          } finally {
-              setIsGenerating(false);
-          }
-      } else {
-          onStartMeeting(topic, agents, mode, files, selectedModel);
-      }
+      onStartMeeting(topic, finalAgents, mode, files, selectedModel, modSettings);
   };
 
-  const isValidTeamSize = agents.length >= 3 && agents.length <= 7;
+  const isValidTeamSize = agents.length >= 2 && agents.length <= 10;
 
   return (
     <div className="w-full h-full bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex flex-col font-sans transition-colors duration-300 relative">
@@ -363,7 +412,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
 
       <div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
         <div className={`w-full max-w-5xl space-y-8 animate-in fade-in zoom-in duration-500 ${step === 'customize' ? 'h-full flex flex-col justify-center' : ''}`}>
-            {/* Title Section (Same as before) */}
+            {/* Title Section */}
             <div className="text-center space-y-3 flex-shrink-0">
               <h1 className="text-5xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 pb-2">{t.title}</h1>
               <p className="text-xl text-gray-600 dark:text-gray-400 font-light">{t.subtitle}</p>
@@ -387,72 +436,79 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                             <label className="block text-sm font-medium ml-1">{t.upload}</label>
                             <div className="flex flex-wrap gap-2">
                                 {files.map((f, i) => (
-                                    <div key={i} className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full text-sm">
-                                        <FileText size={14} className="text-indigo-500"/>
+                                    <div key={i} className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full text-sm border border-gray-200 dark:border-gray-700">
+                                        {f.mimeType === 'text/plain' ? <StickyNote size={14} className="text-yellow-500"/> : <FileText size={14} className="text-indigo-500"/>}
                                         <span className="truncate max-w-[150px]">{f.name}</span>
                                         <button onClick={() => removeFile(i)} className="text-gray-500 hover:text-red-500"><X size={14}/></button>
                                     </div>
                                 ))}
-                                <label className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg cursor-pointer transition-colors text-sm font-medium text-gray-700 dark:text-gray-300">
+                                <label className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg cursor-pointer transition-colors text-sm font-medium text-gray-700 dark:text-gray-300 border border-transparent">
                                     <Paperclip size={16} /> Attach
                                     <input type="file" multiple className="hidden" onChange={handleFileUpload} />
                                 </label>
+                                <button 
+                                    onClick={() => setIsTextModalOpen(true)} 
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors text-sm font-medium text-gray-700 dark:text-gray-300 border border-transparent"
+                                >
+                                    <StickyNote size={16} /> {t.addTextNote}
+                                </button>
                             </div>
                         </div>
                         
-                        <div className={`space-y-2 transition-opacity ${isOffline ? 'opacity-50' : 'opacity-100'}`}>
-                            <label className="block text-sm font-medium ml-1">{t.defaultModel}</label>
-                            <div className="relative">
-                                <select 
-                                    value={selectedModel}
-                                    onChange={(e) => setSelectedModel(e.target.value)}
-                                    disabled={isOffline}
-                                    className="w-full appearance-none bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 pr-10 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed"
-                                >
-                                    {MODEL_OPTIONS.map(opt => (
-                                        <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
-                                    ))}
-                                </select>
-                                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={20} />
+                        {/* Models & Settings Row */}
+                        <div className="flex gap-4 items-end">
+                            <div className={`flex-1 space-y-2 transition-opacity ${isOffline ? 'opacity-50' : 'opacity-100'}`}>
+                                <label className="block text-sm font-medium ml-1">{t.defaultModel}</label>
+                                <div className="relative">
+                                    <select 
+                                        value={selectedModel}
+                                        onChange={(e) => setSelectedModel(e.target.value)}
+                                        disabled={isOffline}
+                                        className="w-full appearance-none bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 pr-10 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed"
+                                    >
+                                        {MODEL_OPTIONS.map(opt => (
+                                            <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={20} />
+                                </div>
                             </div>
+                            
+                            {/* Moderation Options Button */}
+                            <button 
+                                onClick={() => setIsModSettingsOpen(true)}
+                                className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm flex-shrink-0 h-[46px]"
+                            >
+                                <Settings2 size={18} />
+                                <span className="hidden sm:inline font-medium">{t.moderationOptions}</span>
+                            </button>
                         </div>
 
-                        <div className="bg-white dark:bg-gray-800/50 p-4 rounded-xl border border-gray-200 dark:border-gray-700 space-y-3">
-                           <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">{t.modeLabel}</div>
-                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                <label className={`flex flex-col gap-2 p-3 rounded-lg cursor-pointer border transition-colors ${mode === 'multi-agent' ? 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-500/50' : 'border-transparent hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
-                                    <div className="flex items-center gap-2 font-bold text-sm">
-                                        <Bot size={16} className="text-indigo-500" /> 
-                                        {t.modeMulti}
-                                    </div>
-                                    <input type="radio" checked={mode === 'multi-agent'} onChange={() => setMode('multi-agent')} className="sr-only" />
-                                    <p className="text-[10px] text-gray-500 leading-tight">{t.modeMultiDesc}</p>
-                                </label>
-                                <label className={`flex flex-col gap-2 p-3 rounded-lg cursor-pointer border transition-colors ${mode === 'simulation' ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-500/50' : 'border-transparent hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
-                                    <div className="flex items-center gap-2 font-bold text-sm">
-                                        <Zap size={16} className="text-blue-500" /> 
-                                        {t.modeSim}
-                                    </div>
-                                    <input type="radio" checked={mode === 'simulation'} onChange={() => setMode('simulation')} className="sr-only" />
-                                    <p className="text-[10px] text-gray-500 leading-tight">{t.modeSimDesc}</p>
-                                </label>
-                                <label className={`flex flex-col gap-2 p-3 rounded-lg cursor-pointer border transition-colors ${mode === 'offline' ? 'bg-gray-100 dark:bg-gray-700/30 border-gray-300 dark:border-gray-600' : 'border-transparent hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
-                                    <div className="flex items-center gap-2 font-bold text-sm">
-                                        <WifiOff size={16} className="text-gray-500" /> 
-                                        {t.modeOffline}
-                                    </div>
-                                    <input type="radio" checked={mode === 'offline'} onChange={() => setMode('offline')} className="sr-only" />
-                                    <p className="text-[10px] text-gray-500 leading-tight">{t.modeOfflineDesc}</p>
-                                </label>
+                        <div className="flex flex-wrap items-center justify-end gap-6 mt-4">
+                           {/* OFFLINE TOGGLE */}
+                           <div className="relative group">
+                               <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 cursor-pointer transition-colors select-none z-10">
+                                   <WifiOff size={16} />
+                                   <span className="font-medium">{t.modeOffline}</span>
+                                   <div className={`relative w-9 h-5 rounded-full p-1 transition-colors duration-200 ${mode === 'offline' ? 'bg-gray-600' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-200 ${mode === 'offline' ? 'translate-x-4' : 'translate-x-0'}`} />
+                                   </div>
+                                   <input 
+                                        type="checkbox" 
+                                        checked={mode === 'offline'} 
+                                        onChange={(e) => setMode(e.target.checked ? 'offline' : 'multi-agent')} 
+                                        className="hidden" 
+                                   />
+                               </label>
                            </div>
-                           
-                           {/* DEBUG MODE TOGGLE */}
-                           <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
-                               <label className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer transition-colors">
-                                   <Bug size={12} />
-                                   <span>{t.debugMode}</span>
-                                   <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${debugMode ? 'bg-indigo-500' : 'bg-gray-300 dark:bg-gray-600'}`}>
-                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${debugMode ? 'translate-x-4' : ''}`} />
+
+                           {/* DEBUG TOGGLE */}
+                           <div className="relative group">
+                               <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 cursor-pointer transition-colors select-none z-10">
+                                   <Bug size={16} />
+                                   <span className="font-medium">{t.debugMode}</span>
+                                   <div className={`relative w-9 h-5 rounded-full p-1 transition-colors duration-200 ${debugMode ? 'bg-indigo-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-200 ${debugMode ? 'translate-x-4' : 'translate-x-0'}`} />
                                    </div>
                                    <input type="checkbox" checked={debugMode} onChange={(e) => setDebugMode(e.target.checked)} className="hidden" />
                                </label>
@@ -485,24 +541,10 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                             {isPresetDropdownOpen && (
                                 <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl z-50 overflow-hidden max-h-80 overflow-y-auto">
                                     
-                                    {/* OFFICIAL TEMPLATES */}
-                                    <div className="bg-gray-50 dark:bg-gray-900/50 px-4 py-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2">
-                                        <Shield size={12} className="text-indigo-500" />
-                                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{t.officialTemplates}</span>
-                                    </div>
-                                    {PRESET_TEAMS.map(template => (
-                                        <div key={template.id} className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-                                            <button onClick={() => handleLoadConfig(template)} className="flex-grow text-left p-3 font-medium text-sm flex flex-col outline-none focus:bg-gray-100 dark:focus:bg-gray-700 group">
-                                                <span className="text-indigo-700 dark:text-indigo-300 group-hover:text-indigo-600 font-bold">{template.name}</span>
-                                                <span className="text-xs text-gray-500 mt-0.5">{template.agents.length} Agents: {template.agents.map(a => a.name.split(' ')[0]).join(', ')}</span>
-                                            </button>
-                                        </div>
-                                    ))}
-
                                     {/* USER SAVED */}
                                     {savedConfigs.length > 0 && (
                                         <>
-                                            <div className="bg-gray-50 dark:bg-gray-900/50 px-4 py-2 border-y border-gray-100 dark:border-gray-700 flex items-center gap-2 mt-1">
+                                            <div className="bg-gray-50 dark:bg-gray-900/50 px-4 py-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2">
                                                 <Save size={12} className="text-gray-500" />
                                                 <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{t.userPresets}</span>
                                             </div>
@@ -519,6 +561,23 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                             ))}
                                         </>
                                     )}
+
+                                    {/* OFFICIAL TEMPLATES */}
+                                    <div className={`bg-gray-50 dark:bg-gray-900/50 px-4 py-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-2 ${savedConfigs.length > 0 ? 'border-t mt-0' : ''}`}>
+                                        <Shield size={12} className="text-indigo-500" />
+                                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{t.officialTemplates}</span>
+                                    </div>
+                                    {PRESET_TEAMS.map(template => (
+                                        <div key={template.id} className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                                            <button onClick={() => handleLoadConfig(template)} className="flex-grow text-left p-3 font-medium text-sm flex flex-col outline-none focus:bg-gray-100 dark:focus:bg-gray-700 group">
+                                                <span className="text-indigo-700 dark:text-indigo-300 group-hover:text-indigo-600 font-bold">
+                                                    {t.presetTeams?.[template.id] || template.name}
+                                                </span>
+                                                <span className="text-xs text-gray-500 mt-0.5">{template.agents.length} Agents: {template.agents.map(a => a.name.split(' ')[0]).join(', ')}</span>
+                                            </button>
+                                        </div>
+                                    ))}
+
                                 </div>
                             )}
                             </div>
@@ -534,6 +593,9 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                           <ChevronLeft size={20} /> <span className="font-medium">{t.back}</span>
                       </button>
                       <div className="flex gap-2">
+                          <button onClick={() => setIsModSettingsOpen(true)} className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors" title={t.moderationOptions}>
+                             <Settings2 size={18} />
+                          </button>
                           <label className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors cursor-pointer" title={t.import}>
                              <Upload size={18} />
                              <input type="file" accept=".json" onChange={handleImportConfig} className="hidden" />
@@ -549,140 +611,300 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                    
                    {/* Scrollable Content */}
                    <div className="flex-1 overflow-y-auto p-6 space-y-8">
-                       <div className="flex flex-col sm:flex-row gap-2 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-100 dark:border-gray-800">
-                          <input value={topic} onChange={(e) => setTopic(e.target.value)} className="flex-1 border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-white dark:bg-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder={t.topicPlaceholder} />
-                          <button onClick={handleAutoGenerateInCustomize} disabled={isGenerating || isOffline} className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition-colors disabled:opacity-50 disabled:bg-gray-400 dark:disabled:bg-gray-700" title={isOffline ? "Not available in offline mode" : ""}>
-                             {isGenerating ? <div className="animate-spin"><Wand2 size={18} /></div> : <Wand2 size={18} />} {t.generateAgents}
-                          </button>
+                       {/* Topic Input in Customize (ReadOnly-ish or Editable) */}
+                       <div className="flex gap-2">
+                           <input 
+                              value={topic}
+                              onChange={(e) => setTopic(e.target.value)}
+                              className="flex-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2 text-lg font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+                              placeholder="Topic..."
+                           />
+                           <button 
+                             onClick={handleAutoGenerateInCustomize} 
+                             disabled={isGenerating} 
+                             className="px-4 py-2 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 rounded-xl font-medium text-sm flex items-center gap-2 hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors"
+                           >
+                              {isGenerating ? <div className="animate-spin"><Wand2 size={16}/></div> : <Wand2 size={16}/>}
+                              {t.generateAgents}
+                           </button>
                        </div>
+                       
+                       {/* Global Model Apply */}
+                        <div className="flex gap-2 items-center justify-end">
+                            <span className="text-sm text-gray-500">{t.modelLabel}:</span>
+                            <select 
+                                value={selectedModel}
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                disabled={isOffline}
+                                className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-1 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white"
+                            >
+                                {MODEL_OPTIONS.map(opt => (
+                                    <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                ))}
+                            </select>
+                            <button 
+                              onClick={applyModelToAllAgents}
+                              className="text-xs bg-gray-100 dark:bg-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center gap-1"
+                            >
+                                <Copy size={12}/> {t.applyToAll}
+                            </button>
+                        </div>
 
-                       {/* Global Model */}
-                       <div className={`bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800/50 flex flex-col md:flex-row gap-4 items-center justify-between transition-opacity ${isOffline ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-white dark:bg-indigo-800 rounded-lg shadow-sm">
-                                    <Bot size={20} className="text-indigo-600 dark:text-indigo-300" />
-                                </div>
-                                <div className="flex flex-col">
-                                    <span className="font-bold text-sm text-gray-800 dark:text-gray-200">{t.defaultModel}</span>
-                                    <span className="text-xs text-gray-500 dark:text-gray-400">Also applies to new agents</span>
-                                </div>
-                            </div>
-                            <div className="flex flex-1 w-full md:w-auto gap-2">
-                                <div className="relative flex-1">
-                                    <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={isOffline} className="w-full appearance-none bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-2 pr-8 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-sm text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed">
-                                        {MODEL_OPTIONS.map(opt => (
-                                            <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
-                                        ))}
-                                    </select>
-                                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
-                                </div>
-                                <button onClick={applyModelToAllAgents} disabled={isOffline} className="flex items-center gap-1 px-3 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" title={t.applyToAll}>
-                                    <Copy size={14} /> <span className="hidden sm:inline">{t.applyToAll}</span>
-                                </button>
-                            </div>
-                       </div>
+                       {/* Agent List */}
+                       <div className="grid grid-cols-1 gap-4">
+                           {agents.map((agent, i) => (
+                               <div key={agent.id} className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4 border border-gray-200 dark:border-gray-700 relative group transition-all hover:shadow-md">
+                                   <div className="flex flex-col sm:flex-row gap-4 items-start">
+                                       <div className={`w-12 h-12 rounded-full ${agent.avatarColor} flex items-center justify-center text-white font-bold text-xl shadow-sm flex-shrink-0`}>
+                                           {agent.name.charAt(0)}
+                                       </div>
+                                       <div className="flex-1 w-full space-y-3">
+                                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                               <div>
+                                                   <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t.agentName}</label>
+                                                   <input 
+                                                      value={agent.name}
+                                                      onChange={(e) => handleAgentChange(i, 'name', e.target.value)}
+                                                      className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
+                                                   />
+                                               </div>
+                                               <div>
+                                                   <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t.agentRole}</label>
+                                                   <input 
+                                                      value={agent.role}
+                                                      onChange={(e) => handleAgentChange(i, 'role', e.target.value)}
+                                                      className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                                   />
+                                               </div>
+                                           </div>
+                                           
+                                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                <div>
+                                                   <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Cpu size={12}/> {t.modelLabel}</label>
+                                                   <select 
+                                                        value={agent.model || selectedModel}
+                                                        onChange={(e) => handleAgentChange(i, 'model', e.target.value)}
+                                                        disabled={isOffline}
+                                                        className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                                    >
+                                                        {MODEL_OPTIONS.map(opt => (
+                                                            <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Heart size={12}/> {t.agentInterest}</label>
+                                                    <input 
+                                                      value={agent.interest || ''}
+                                                      onChange={(e) => handleAgentChange(i, 'interest', e.target.value)}
+                                                      placeholder="e.g. Cost efficiency, Safety..."
+                                                      className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                                   />
+                                                </div>
+                                           </div>
 
-                       {/* Agents Grid */}
-                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                          {agents.map((agent, idx) => (
-                              <div key={agent.id} className="group relative border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 hover:shadow-lg transition-shadow overflow-hidden flex flex-col">
-                                  <button onClick={() => handleRemoveAgent(idx)} className="absolute top-2 right-2 p-1.5 bg-gray-100 dark:bg-gray-700 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full z-10 transition-colors opacity-0 group-hover:opacity-100" title="Remove Agent">
-                                      <X size={14} />
-                                  </button>
-
-                                  <div className="p-3 border-b border-gray-100 dark:border-gray-700 flex items-center gap-3 bg-gray-50 dark:bg-gray-800/80">
-                                      <div className={`w-8 h-8 rounded-full flex-shrink-0 ${agent.avatarColor} shadow-inner`} />
-                                      <input value={agent.name} onChange={(e) => handleAgentChange(idx, 'name', e.target.value)} className="flex-1 font-bold bg-transparent border-none p-0 focus:ring-0 text-gray-900 dark:text-white" placeholder="Agent Name" />
-                                  </div>
-                                  
-                                  <div className="px-3 pt-3">
-                                    <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Role</label>
-                                    <input value={agent.role} onChange={(e) => handleAgentChange(idx, 'role', e.target.value)} className="w-full bg-transparent border-b border-gray-200 dark:border-gray-700 pb-1 mb-2 focus:border-indigo-500 outline-none text-sm text-gray-700 dark:text-gray-300" placeholder="e.g. Moderator, Critic" />
-                                  </div>
-
-                                  {/* NEW INTEREST FIELD */}
-                                  <div className="px-3">
-                                    <label className="text-[10px] uppercase font-bold text-purple-500 tracking-wider flex items-center gap-1">
-                                        <Heart size={10} /> {t.agentInterest}
-                                    </label>
-                                    <input value={agent.interest || ''} onChange={(e) => handleAgentChange(idx, 'interest', e.target.value)} className="w-full bg-transparent border-b border-gray-200 dark:border-gray-700 pb-1 mb-2 focus:border-purple-500 outline-none text-sm text-gray-700 dark:text-gray-300" placeholder="e.g. Costs, UX, Ethics" />
-                                  </div>
-
-                                  <div className="flex-1 flex flex-col px-3 pb-3">
-                                    <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Instruction / Personality</label>
-                                    <textarea value={agent.systemInstruction} onChange={(e) => handleAgentChange(idx, 'systemInstruction', e.target.value)} className="w-full text-sm leading-relaxed h-32 bg-gray-50 dark:bg-gray-900/50 p-3 rounded-lg resize-y border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all" placeholder="Describe how this agent should behave..." />
-                                  </div>
-
-                                   <div className={`px-3 pb-3 transition-opacity ${isOffline ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-                                        <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1 flex items-center gap-1">
-                                            <Cpu size={10} /> Model
-                                        </label>
-                                        <div className="relative">
-                                            <select value={agent.model || selectedModel} onChange={(e) => handleAgentChange(idx, 'model', e.target.value)} disabled={isOffline} className="w-full appearance-none bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1.5 text-xs shadow-sm outline-none focus:ring-1 focus:ring-indigo-500 text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed">
-                                                {MODEL_OPTIONS.map(opt => (
-                                                    <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
-                                                ))}
-                                            </select>
-                                        </div>
+                                           <div>
+                                               <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 block">{t.agentInstruction}</label>
+                                               <textarea 
+                                                  value={agent.systemInstruction}
+                                                  onChange={(e) => handleAgentChange(i, 'systemInstruction', e.target.value)}
+                                                  rows={2}
+                                                  className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500 resize-none leading-relaxed"
+                                               />
+                                           </div>
+                                       </div>
+                                       <button onClick={() => handleRemoveAgent(i)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                                           <Trash2 size={18} />
+                                       </button>
                                    </div>
-                              </div>
-                          ))}
-                          
-                          <button onClick={() => {
-                                const newAgent: Agent = {
-                                    id: `custom-${Date.now()}`,
-                                    name: "New Agent",
-                                    role: "Participant",
-                                    avatarColor: "bg-gray-500",
-                                    systemInstruction: "You are a helpful assistant.",
-                                    interest: "",
-                                    model: selectedModel 
-                                };
-                                setAgents([...agents, newAgent]);
-                            }} disabled={agents.length >= 7} className={`border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl flex flex-col items-center justify-center p-6 transition-all h-[300px] ${agents.length >= 7 ? 'opacity-50 cursor-not-allowed bg-gray-50 dark:bg-gray-900/30 text-gray-400' : 'text-gray-400 hover:text-indigo-500 hover:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/10 cursor-pointer'}`}>
-                              {agents.length >= 7 ? (
-                                  <>
-                                    <AlertCircle size={40} />
-                                    <span className="font-bold mt-2">Max 7 Agents</span>
-                                  </>
-                              ) : (
-                                  <>
-                                    <Plus size={40} />
-                                    <span className="font-bold mt-2">Add Agent</span>
-                                  </>
-                              )}
-                          </button>
+                               </div>
+                           ))}
+                           <button onClick={handleAddAgent} className="flex items-center justify-center gap-2 py-4 border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl text-gray-500 hover:text-indigo-500 hover:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/10 transition-all font-bold">
+                               <Plus size={20} />
+                               {t.add}
+                           </button>
                        </div>
                    </div>
-                   
-                   <div className="p-4 border-t border-gray-200 dark:border-gray-800 bg-white/90 dark:bg-gray-900/90 backdrop-blur-md rounded-b-2xl flex flex-col items-center justify-center flex-shrink-0 gap-2">
-                      {!isValidTeamSize && (
-                          <div className="text-red-500 text-sm font-semibold flex items-center gap-2 animate-pulse">
-                              <AlertTriangle size={16} />
-                              Team size must be between 3 and 7 members.
-                          </div>
-                      )}
-                      <button onClick={handleStartCustomMeeting} disabled={!isValidTeamSize || isGenerating} className="px-12 py-4 bg-green-600 text-white rounded-full font-bold text-lg flex items-center gap-2 hover:bg-green-500 shadow-xl shadow-green-900/20 hover:scale-105 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none">
-                         {isGenerating ? <div className="animate-spin"><Wand2 size={24} /></div> : <Play size={24} fill="currentColor" />}
-                         {isGenerating ? "Preparing..." : t.start}
-                      </button>
+
+                   {/* Footer - Fixed */}
+                   <div className="p-6 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/50 rounded-b-2xl">
+                       <button onClick={handleStartCustomMeeting} disabled={!isValidTeamSize || !topic.trim()} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-4 rounded-xl font-bold text-lg shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:shadow-none transition-all flex items-center justify-center gap-2">
+                           <Play size={24} fill="currentColor" />
+                           {t.start}
+                       </button>
                    </div>
                 </div>
             )}
         </div>
       </div>
-      {/* Save Modal */}
+
+      {/* --- MODALS --- */}
+
+      {/* SAVE MODAL */}
       {showSaveModal && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-              <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700 scale-100">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700">
                   <div className="flex justify-between items-center mb-4">
-                      <h3 className="font-bold text-lg">{t.save}</h3>
-                      <button onClick={() => setShowSaveModal(false)} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
+                      <h3 className="font-bold text-lg text-gray-900 dark:text-white">{t.save}</h3>
+                      <button onClick={() => setShowSaveModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={20}/></button>
                   </div>
-                  <input autoFocus value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="e.g. Product Launch Team" className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none mb-4" />
+                  <input 
+                    autoFocus
+                    value={saveName}
+                    onChange={(e) => setSaveName(e.target.value)}
+                    placeholder="Team Name..."
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none mb-4"
+                  />
                   <div className="flex gap-2 justify-end">
-                      <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Cancel</button>
-                      <button onClick={handleSaveConfig} disabled={!saveName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">Save</button>
+                      <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">{t.cancel}</button>
+                      <button onClick={handleSaveConfig} disabled={!saveName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{t.save}</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* TEXT NOTE MODAL - FIXED */}
+      {isTextModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-200 dark:border-gray-700 transform scale-100 transition-all">
+                <h3 className="font-bold text-lg mb-4 text-gray-900 dark:text-white flex items-center gap-2">
+                  <StickyNote className="text-yellow-500" />
+                  {t.addTextNote}
+                </h3>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.textNoteTitle}</label>
+                    <input 
+                      autoFocus
+                      className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-gray-900 dark:text-white placeholder-gray-400"
+                      placeholder="e.g. System Context"
+                      value={noteTitle}
+                      onChange={e => setNoteTitle(e.target.value)}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{t.textNoteContent}</label>
+                    <textarea
+                      className="w-full h-32 px-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none text-gray-900 dark:text-white placeholder-gray-400"
+                      placeholder={t.textNoteContent}
+                      value={noteContent}
+                      onChange={e => setNoteContent(e.target.value)}
+                    />
+                  </div>
+                </div>
+    
+                <div className="flex justify-end gap-3 mt-6">
+                  <button 
+                    onClick={() => setIsTextModalOpen(false)} 
+                    className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg font-medium transition-colors"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button 
+                    onClick={handleAddTextNote} 
+                    disabled={!noteContent.trim()} 
+                    className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold shadow-lg shadow-indigo-500/20 disabled:opacity-50 disabled:shadow-none transition-all"
+                  >
+                    {t.add}
+                  </button>
+                </div>
+             </div>
+          </div>
+      )}
+
+      {/* MODERATION SETTINGS MODAL */}
+      {isModSettingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-lg border border-gray-200 dark:border-gray-700 max-h-[90vh] overflow-y-auto">
+                  <div className="flex justify-between items-start mb-4">
+                      <div>
+                          <h3 className="font-bold text-xl text-gray-900 dark:text-white flex items-center gap-2">
+                             <Diamond className="text-indigo-500 fill-indigo-500" size={20} />
+                             {t.modOptTitle}
+                          </h3>
+                          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{t.modOptDesc}</p>
+                      </div>
+                      <button onClick={() => setIsModSettingsOpen(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1"><X size={24}/></button>
+                  </div>
+
+                  <div className="space-y-6">
+                      {/* Diamond Explanation */}
+                      <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
+                          <h4 className="font-bold text-indigo-900 dark:text-indigo-200 text-sm mb-2">{t.diamondTitle}</h4>
+                          <p className="text-xs text-indigo-800 dark:text-indigo-300 leading-relaxed mb-2">{t.diamondDesc}</p>
+                          <ul className="text-xs text-indigo-700 dark:text-indigo-400 space-y-1 ml-2">
+                              <li>{t.diamondPhase1}</li>
+                              <li>{t.diamondPhase2}</li>
+                              <li>{t.diamondPhase3}</li>
+                          </ul>
+                      </div>
+
+                      {/* Toggles */}
+                      <div className="space-y-4">
+                           {/* Six Hats */}
+                           <div className="flex items-start gap-3">
+                               <div className="pt-1"><Bot size={18} className="text-gray-600 dark:text-gray-400" /></div>
+                               <div className="flex-1">
+                                   <div className="flex items-center justify-between mb-1">
+                                       <span className="font-bold text-gray-900 dark:text-gray-100">{t.optSixHats}</span>
+                                       <div className={`relative w-10 h-6 rounded-full p-1 cursor-pointer transition-colors ${modSettings.sixThinkingHats ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`} onClick={() => setModSettings(s => ({...s, sixThinkingHats: !s.sixThinkingHats}))}>
+                                            <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${modSettings.sixThinkingHats ? 'translate-x-4' : 'translate-x-0'}`} />
+                                       </div>
+                                   </div>
+                                   <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{t.optSixHatsDesc}</p>
+                               </div>
+                           </div>
+                           
+                           {/* Fist to Five */}
+                           <div className="flex items-start gap-3">
+                               <div className="pt-1"><Hand size={18} className="text-gray-600 dark:text-gray-400" /></div>
+                               <div className="flex-1">
+                                   <div className="flex items-center justify-between mb-1">
+                                       <span className="font-bold text-gray-900 dark:text-gray-100">{t.optFistToFive}</span>
+                                       <div className={`relative w-10 h-6 rounded-full p-1 cursor-pointer transition-colors ${modSettings.fistToFive ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`} onClick={() => setModSettings(s => ({...s, fistToFive: !s.fistToFive}))}>
+                                            <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${modSettings.fistToFive ? 'translate-x-4' : 'translate-x-0'}`} />
+                                       </div>
+                                   </div>
+                                   <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{t.optFistToFiveDesc}</p>
+                               </div>
+                           </div>
+
+                           {/* Parking Lot */}
+                           <div className="flex items-start gap-3">
+                               <div className="pt-1"><ListFilter size={18} className="text-gray-600 dark:text-gray-400" /></div>
+                               <div className="flex-1">
+                                   <div className="flex items-center justify-between mb-1">
+                                       <span className="font-bold text-gray-900 dark:text-gray-100">{t.optParkingLot}</span>
+                                       <div className={`relative w-10 h-6 rounded-full p-1 cursor-pointer transition-colors ${modSettings.parkingLot ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`} onClick={() => setModSettings(s => ({...s, parkingLot: !s.parkingLot}))}>
+                                            <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${modSettings.parkingLot ? 'translate-x-4' : 'translate-x-0'}`} />
+                                       </div>
+                                   </div>
+                                   <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{t.optParkingLotDesc}</p>
+                               </div>
+                           </div>
+
+                           {/* Reframing */}
+                           <div className="flex items-start gap-3">
+                               <div className="pt-1"><MessageCircle size={18} className="text-gray-600 dark:text-gray-400" /></div>
+                               <div className="flex-1">
+                                   <div className="flex items-center justify-between mb-1">
+                                       <span className="font-bold text-gray-900 dark:text-gray-100">{t.optReframing}</span>
+                                       <div className={`relative w-10 h-6 rounded-full p-1 cursor-pointer transition-colors ${modSettings.reframing ? 'bg-indigo-600' : 'bg-gray-300 dark:bg-gray-600'}`} onClick={() => setModSettings(s => ({...s, reframing: !s.reframing}))}>
+                                            <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${modSettings.reframing ? 'translate-x-4' : 'translate-x-0'}`} />
+                                       </div>
+                                   </div>
+                                   <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{t.optReframingDesc}</p>
+                               </div>
+                           </div>
+                      </div>
+                  </div>
+                  
+                  <div className="mt-8 flex justify-end">
+                      <button onClick={() => setIsModSettingsOpen(false)} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold shadow-md transition-all flex items-center gap-2">
+                          <Check size={18} /> Done
+                      </button>
                   </div>
               </div>
           </div>
