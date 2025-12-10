@@ -1,5 +1,4 @@
 
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Play, Pause, Send, MessageSquare, Mic2, User, FileText, Paperclip, X, Eye, Save, Hand, ShieldAlert, Download, FileCheck, Loader2 } from 'lucide-react';
 import { LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, DEFAULT_MODERATION_SETTINGS } from './constants';
@@ -10,6 +9,7 @@ import { ChatLog } from './components/ChatLog';
 import { SetupScreen } from './components/SetupScreen';
 import { ErrorBanner } from './components/ErrorBanner';
 import { StatsDisplay } from './components/StatsDisplay';
+import { Whiteboard } from './components/Whiteboard'; // NEW IMPORT
 import { DebugLogger } from './utils/debugLogger';
 
 const App: React.FC = () => {
@@ -33,7 +33,7 @@ const App: React.FC = () => {
   
   const [saveName, setSaveName] = useState('');
   const [isMobile, setIsMobile] = useState(false);
-  const [isBoardHovered, setIsBoardHovered] = useState(false);
+  const [isBoardHovered, setIsBoardHovered] = useState(false); // Restored for hover effect
   const [debugMode, setDebugMode] = useState(false);
   
   // Initialize backend based on mode
@@ -61,7 +61,7 @@ const App: React.FC = () => {
   // Hook handles all meeting logic
   const {
     agents, messages, whiteboardData,
-    isActive, isPaused, setIsPaused, isWaitingForUser, error, currentSpeakerId, handRaisedQueue, agentActiveModels, moderatorModel, debugPrompt,
+    isActive, isPaused, setIsPaused, isWaitingForUser, isThinking, error, currentSpeakerId, handRaisedQueue, agentActiveModels, moderatorModel, debugPrompt,
     startMeeting, stopMeeting, togglePause, addMessage, addFiles, generateMinutes
   } = useMeeting(backend, langCode, debugMode, startParams?.settings || DEFAULT_MODERATION_SETTINGS);
 
@@ -288,31 +288,24 @@ const App: React.FC = () => {
             {!showLog && !isMobile && (
               <div className="flex-1 relative z-10 flex flex-col items-center justify-center p-4 pt-16 pb-32 h-full">
                   
-                  {/* CENTER: WHITEBOARD IMAGE */}
-                  <div className={`absolute inset-4 md:inset-0 flex items-center justify-center pointer-events-none transition-all duration-300 ${isBoardHovered ? 'z-50' : 'z-0'}`}>
+                  {/* CENTER: WHITEBOARD COMPONENT */}
+                  <div className={`absolute inset-4 md:inset-0 flex items-center justify-center transition-all duration-300 ${isBoardHovered ? 'z-[60]' : 'z-0'}`}>
+                      {/* Fixed Whiteboard to HD Aspect Ratio (16:9) */}
                       <div 
-                          className="relative aspect-video bg-white dark:bg-gray-800 rounded-lg shadow-xl border-4 border-gray-200 dark:border-gray-700 overflow-hidden flex items-center justify-center transition-all duration-300 transform pointer-events-auto
-                          w-full md:w-[95vw] md:max-w-none lg:w-[33.33vw] lg:max-w-none"
                           onMouseEnter={() => setIsBoardHovered(true)}
                           onMouseLeave={() => setIsBoardHovered(false)}
+                          className={`
+                            relative bg-white dark:bg-gray-800 rounded-lg shadow-xl border-4 border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col
+                            aspect-video mx-auto shadow-2xl transition-all duration-300
+                            w-full md:w-[90vw] lg:w-1/3 2xl:w-1/2
+                            ${isBoardHovered ? 'scale-110 shadow-[0_0_50px_rgba(0,0,0,0.5)]' : 'scale-100'}
+                          `}
                       >
-                          {whiteboardData.imageUrl ? (
-                              <img src={whiteboardData.imageUrl} alt="Whiteboard" className="w-full h-full object-cover" />
-                          ) : (
-                              <div className="text-gray-400 dark:text-gray-600 flex flex-col items-center">
-                                  <FileText size={48} className="mb-2 opacity-50" />
-                                  <p>{t.emptyWhiteboard}</p>
-                              </div>
-                          )}
-                          
-                          {whiteboardData.isGenerating && (
-                              <div className="absolute inset-0 bg-white/50 dark:bg-black/50 backdrop-blur-sm flex items-center justify-center">
-                                  <div className="bg-white dark:bg-gray-800 px-6 py-3 rounded-full flex items-center gap-3 border border-gray-200 dark:border-white/20 animate-pulse shadow-lg">
-                                      <div className="w-2 h-2 bg-indigo-500 dark:bg-white rounded-full animate-bounce" />
-                                      <span className="text-gray-700 dark:text-white font-mono text-sm">{t.writing}</span>
-                                  </div>
-                              </div>
-                          )}
+                          <Whiteboard 
+                             data={whiteboardData} 
+                             isLoading={whiteboardData.isGenerating || false} 
+                             langCode={langCode} 
+                          />
                       </div>
                   </div>
 
@@ -321,7 +314,7 @@ const App: React.FC = () => {
                       <div className="relative">
                         <div className={`relative w-16 h-16 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all duration-300 ${isModeratorSpeaking ? 'border-4 border-indigo-500' : 'border-2 border-indigo-200 dark:border-indigo-800'}`}>
                             {/* Thinking Spinner for Moderator */}
-                            {isModeratorSpeaking && <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
+                            {isModeratorSpeaking && isThinking && <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
                             <Mic2 size={32} className="text-indigo-600 dark:text-indigo-200" />
                         </div>
                         {/* Moderator Downgrade Indicator */}
@@ -339,7 +332,7 @@ const App: React.FC = () => {
                       {/* Moderator Bubble */}
                       {(isModeratorSpeaking || getLatestMessage('ai-moderator')) && (
                           <div className="absolute top-20 w-[400px] bg-white dark:bg-indigo-900/90 text-gray-800 dark:text-indigo-100 p-5 rounded-2xl text-base shadow-xl text-center border border-indigo-100 dark:border-indigo-500/50 animate-in fade-in zoom-in slide-in-from-top-4 z-50">
-                              {isModeratorSpeaking ? (
+                              {isModeratorSpeaking && isThinking ? (
                                   debugMode && debugPrompt ? (
                                       <DebugPromptBox prompt={debugPrompt} />
                                   ) : (
@@ -360,8 +353,8 @@ const App: React.FC = () => {
                           const borderClass = getBorderClass(agent.avatarColor);
                           const textClass = getTextClass(agent.avatarColor);
                           const isHandRaised = handRaisedQueue.includes(agent.id);
-                          const activeModel = agentActiveModels[agent.id];
-                          const isDowngraded = activeModel && activeModel !== (agent.model || DEFAULT_MODEL);
+                          const activeModel = agentActiveModels[agent.id] || agent.model || DEFAULT_MODEL;
+                          const isDowngraded = agentActiveModels[agent.id] && agentActiveModels[agent.id] !== (agent.model || DEFAULT_MODEL);
                           
                           // Show bubble if speaking OR has a previous message
                           const showBubble = isSpeaking || latestMsg;
@@ -376,25 +369,32 @@ const App: React.FC = () => {
                                       <div className="mt-2 text-[10px] leading-relaxed line-clamp-6">{agent.systemInstruction}</div>
                                   </div>
 
-                                  <div className="relative">
-                                      <div className={`relative flex-shrink-0 w-16 h-16 rounded-full ${agent.avatarColor} border-4 ${isSpeaking ? 'border-white dark:border-white shadow-[0_0_15px_rgba(0,0,0,0.2)] dark:shadow-[0_0_15px_rgba(255,255,255,0.4)]' : 'border-gray-100 dark:border-gray-800'} flex items-center justify-center text-white font-bold shadow-lg z-20`}>
-                                          {isSpeaking && <div className="absolute -inset-1 rounded-full border-4 border-t-white border-transparent animate-spin z-30" />}
-                                          {agent.name.charAt(0)}
-                                          
-                                          {/* Hand Raised Indicator */}
-                                          {isHandRaised && (
-                                              <div className="absolute -top-2 -right-2 bg-yellow-400 text-yellow-900 p-1 rounded-full shadow-lg animate-bounce z-40 border-2 border-white dark:border-gray-900">
-                                                  <Hand size={14} />
-                                              </div>
-                                          )}
-                                      </div>
-                                      {/* Downgrade Indicator */}
-                                      {isDowngraded && (
-                                          <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-orange-100 dark:bg-orange-900/80 text-orange-600 dark:text-orange-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-orange-200 dark:border-orange-700 whitespace-nowrap shadow-sm flex items-center gap-1 z-30" title={t.downgradeAlert}>
-                                              <ShieldAlert size={8} />
-                                              {getModelLabel(activeModel)}
+                                  <div className="flex flex-col items-center gap-1">
+                                      {/* NAME (TOP) */}
+                                      <span className={`text-[10px] font-bold uppercase tracking-wider bg-white/80 dark:bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm shadow-sm ${textClass}`}>
+                                          {agent.name}
+                                      </span>
+
+                                      <div className="relative">
+                                          <div className={`relative flex-shrink-0 w-16 h-16 rounded-full ${agent.avatarColor} border-4 ${isSpeaking ? 'border-white dark:border-white shadow-[0_0_15px_rgba(0,0,0,0.2)] dark:shadow-[0_0_15px_rgba(255,255,255,0.4)]' : 'border-gray-100 dark:border-gray-800'} flex items-center justify-center text-white font-bold shadow-lg z-20 text-3xl`}>
+                                              {isSpeaking && isThinking && <div className="absolute -inset-1 rounded-full border-4 border-t-white border-transparent animate-spin z-30" />}
+                                              {/* EMOTION EMOJI OR DEFAULT */}
+                                              {agent.currentEmotion || '😐'}
+                                              
+                                              {/* Hand Raised Indicator */}
+                                              {isHandRaised && (
+                                                  <div className="absolute -top-2 -right-2 bg-yellow-400 text-yellow-900 p-1 rounded-full shadow-lg animate-bounce z-40 border-2 border-white dark:border-gray-900">
+                                                      <Hand size={14} />
+                                                  </div>
+                                              )}
                                           </div>
-                                      )}
+                                      </div>
+
+                                      {/* MODEL NAME (BOTTOM) */}
+                                      <div className={`text-[9px] font-medium px-1.5 py-0.5 rounded border flex items-center gap-1 backdrop-blur-sm shadow-sm whitespace-nowrap ${isDowngraded ? 'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/50 dark:text-orange-200' : 'bg-gray-100 text-gray-500 border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700'}`}>
+                                          {isDowngraded && <ShieldAlert size={8} />}
+                                          {getModelLabel(activeModel)}
+                                      </div>
                                   </div>
                                   
                                   {showBubble && (
@@ -403,7 +403,7 @@ const App: React.FC = () => {
                                           lg:w-[calc(33vw_-_9rem)] lg:min-w-0 lg:max-w-none
                                           border-2 ${borderClass} animate-in fade-in slide-in-from-left-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
                                           <span className={`block font-bold text-xs mb-1 ${textClass}`}>{agent.name}</span>
-                                          {isSpeaking ? (
+                                          {isSpeaking && isThinking ? (
                                               debugMode && debugPrompt ? (
                                                   <DebugPromptBox prompt={debugPrompt} />
                                               ) : (
@@ -427,8 +427,8 @@ const App: React.FC = () => {
                           const borderClass = getBorderClass(agent.avatarColor);
                           const textClass = getTextClass(agent.avatarColor);
                           const isHandRaised = handRaisedQueue.includes(agent.id);
-                          const activeModel = agentActiveModels[agent.id];
-                          const isDowngraded = activeModel && activeModel !== (agent.model || DEFAULT_MODEL);
+                          const activeModel = agentActiveModels[agent.id] || agent.model || DEFAULT_MODEL;
+                          const isDowngraded = agentActiveModels[agent.id] && agentActiveModels[agent.id] !== (agent.model || DEFAULT_MODEL);
                           
                           // Show bubble if speaking OR has a previous message
                           const showBubble = isSpeaking || latestMsg;
@@ -443,25 +443,32 @@ const App: React.FC = () => {
                                       <div className="mt-2 text-[10px] leading-relaxed line-clamp-6">{agent.systemInstruction}</div>
                                   </div>
 
-                                  <div className="relative">
-                                      <div className={`relative flex-shrink-0 w-16 h-16 rounded-full ${agent.avatarColor} border-4 ${isSpeaking ? 'border-white dark:border-white shadow-[0_0_15px_rgba(0,0,0,0.2)] dark:shadow-[0_0_15px_rgba(255,255,255,0.4)]' : 'border-gray-100 dark:border-gray-800'} flex items-center justify-center text-white font-bold shadow-lg z-20`}>
-                                          {isSpeaking && <div className="absolute -inset-1 rounded-full border-4 border-t-white border-transparent animate-spin z-30" />}
-                                          {agent.name.charAt(0)}
-                                          
-                                          {/* Hand Raised Indicator */}
-                                          {isHandRaised && (
-                                              <div className="absolute -top-2 -left-2 bg-yellow-400 text-yellow-900 p-1 rounded-full shadow-lg animate-bounce z-40 border-2 border-white dark:border-gray-900">
-                                                  <Hand size={14} />
-                                              </div>
-                                          )}
-                                      </div>
-                                      {/* Downgrade Indicator */}
-                                      {isDowngraded && (
-                                          <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-orange-100 dark:bg-orange-900/80 text-orange-600 dark:text-orange-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-orange-200 dark:border-orange-700 whitespace-nowrap shadow-sm flex items-center gap-1 z-30" title={t.downgradeAlert}>
-                                              <ShieldAlert size={8} />
-                                              {getModelLabel(activeModel)}
+                                  <div className="flex flex-col items-center gap-1">
+                                      {/* NAME (TOP) */}
+                                      <span className={`text-[10px] font-bold uppercase tracking-wider bg-white/80 dark:bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm shadow-sm ${textClass}`}>
+                                          {agent.name}
+                                      </span>
+
+                                      <div className="relative">
+                                          <div className={`relative flex-shrink-0 w-16 h-16 rounded-full ${agent.avatarColor} border-4 ${isSpeaking ? 'border-white dark:border-white shadow-[0_0_15px_rgba(0,0,0,0.2)] dark:shadow-[0_0_15px_rgba(255,255,255,0.4)]' : 'border-gray-100 dark:border-gray-800'} flex items-center justify-center text-white font-bold shadow-lg z-20 text-3xl`}>
+                                              {isSpeaking && isThinking && <div className="absolute -inset-1 rounded-full border-4 border-t-white border-transparent animate-spin z-30" />}
+                                              {/* EMOTION EMOJI OR DEFAULT */}
+                                              {agent.currentEmotion || '😐'}
+                                              
+                                              {/* Hand Raised Indicator */}
+                                              {isHandRaised && (
+                                                  <div className="absolute -top-2 -left-2 bg-yellow-400 text-yellow-900 p-1 rounded-full shadow-lg animate-bounce z-40 border-2 border-white dark:border-gray-900">
+                                                      <Hand size={14} />
+                                                  </div>
+                                              )}
                                           </div>
-                                      )}
+                                      </div>
+
+                                      {/* MODEL NAME (BOTTOM) */}
+                                      <div className={`text-[9px] font-medium px-1.5 py-0.5 rounded border flex items-center gap-1 backdrop-blur-sm shadow-sm whitespace-nowrap ${isDowngraded ? 'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/50 dark:text-orange-200' : 'bg-gray-100 text-gray-500 border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700'}`}>
+                                          {isDowngraded && <ShieldAlert size={8} />}
+                                          {getModelLabel(activeModel)}
+                                      </div>
                                   </div>
                                   
                                   {showBubble && (
@@ -470,7 +477,7 @@ const App: React.FC = () => {
                                           lg:w-[calc(33vw_-_9rem)] lg:min-w-0 lg:max-w-none
                                           border-2 ${borderClass} animate-in fade-in slide-in-from-right-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
                                           <span className={`block font-bold text-xs mb-1 text-right ${textClass}`}>{agent.name}</span>
-                                          {isSpeaking ? (
+                                          {isSpeaking && isThinking ? (
                                               debugMode && debugPrompt ? (
                                                   <DebugPromptBox prompt={debugPrompt} />
                                               ) : (
@@ -500,14 +507,11 @@ const App: React.FC = () => {
                   
                   {isMobile && (
                       <div className="w-full h-64 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 overflow-hidden flex-shrink-0 relative">
-                          {whiteboardData.imageUrl ? (
-                              <img src={whiteboardData.imageUrl} alt="Whiteboard" className="w-full h-full object-cover" />
-                          ) : (
-                              <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-600">
-                                  <FileText size={32} className="mb-2 opacity-50" />
-                                  <p className="text-sm">{t.emptyWhiteboard}</p>
-                              </div>
-                          )}
+                           <Whiteboard 
+                             data={whiteboardData} 
+                             isLoading={whiteboardData.isGenerating || false} 
+                             langCode={langCode} 
+                          />
                           <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded">Whiteboard</div>
                       </div>
                   )}

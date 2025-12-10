@@ -1,15 +1,27 @@
 
-
-
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Agent, Message, WhiteboardData, MeetingBackend, MeetingMode, ModeratorResponse, Attachment, UsageStats, GenerationResult, NegotiationResult, HandRaiseSignal, ModerationSettings } from "../types";
+import { Agent, Message, WhiteboardData, MeetingBackend, MeetingMode, ModeratorResponse, Attachment, UsageStats, GenerationResult, NegotiationResult, HandRaiseSignal, ModerationSettings, VoteResult } from "../types";
 import { AGENTS, DEFAULT_MODEL, MODEL_FALLBACK_CHAIN, DEFAULT_MODERATION_SETTINGS } from "../constants";
 import { DebugLogger } from "../utils/debugLogger";
+import { 
+    TEAM_GENERATION_PROMPT, 
+    AGENT_INTRO_PROMPT, 
+    GOAL_NEGOTIATION_PROMPT, 
+    MODERATOR_TURN_PROMPT, 
+    AGENT_RESPONSE_PROMPT, 
+    FIST_TO_FIVE_VOTE_PROMPT, 
+    CHECK_HAND_RAISES_PROMPT, 
+    GENERATE_MINUTES_PROMPT, 
+    UPDATE_WHITEBOARD_PROMPT,
+    WHITEBOARD_IMAGE_PROMPT,
+    SUMMARIZE_CONVERSATION_PROMPT
+} from "../prompts";
 
 // --- CONSTANTS & HELPERS ---
 const MODEL_NAME_IMAGE = "gemini-3-pro-image-preview";
-// Use Lite model for frequent reaction checks to save quota/cost
+// Use Lite model for frequent reaction checks & summarization to save quota/cost
 const MODEL_NAME_CHECK = "gemini-2.5-flash-lite"; 
+const MODEL_NAME_CHECK_BACKUP = "gemini-2.0-flash-lite-preview-02-05";
 
 // Global usage tracking
 let globalStats: UsageStats = {
@@ -224,7 +236,8 @@ export class OfflineBackend implements MeetingBackend {
       await wait(1000);
       return {
           text: `(Offline) Ready to discuss ${topic} as ${agent.name}. Let me explain my detailed view on this matter...`,
-          usedModel: 'offline'
+          usedModel: 'offline',
+          emotion: '🤔'
       };
   }
 
@@ -254,13 +267,32 @@ export class OfflineBackend implements MeetingBackend {
       files: Attachment[], 
       model?: string, 
       handRaisedSignals?: HandRaiseSignal[], 
-      settings?: ModerationSettings,
+      settings?: ModerationSettings, 
       meetingStage?: 'divergence' | 'groan' | 'convergence',
+      voteResults?: VoteResult[],
       onPrompt?: (prompt: string) => void
   ): Promise<ModeratorResponse & { usedModel: string }> {
     if (onPrompt) onPrompt(`(Offline Mock Prompt) Moderator deciding next speaker... Phase: ${meetingStage}`);
     await wait(800);
     
+    // Simulate Fist to Five call
+    if (settings?.fistToFive && meetingStage === 'convergence' && !voteResults && Math.random() > 0.5) {
+        return {
+            nextSpeakerId: 'ai-moderator',
+            moderationText: "We seem to be converging. Let's do a Fist-to-Five check on this proposal.",
+            voteProposal: "Adopt the current plan for " + topic,
+            usedModel: 'offline'
+        };
+    }
+
+    if (voteResults) {
+        return {
+            nextSpeakerId: voteResults[0].agentId,
+            moderationText: "Thanks for voting. I see some low scores. Let's hear your concerns.",
+            usedModel: 'offline'
+        }
+    }
+
     let nextAgentId = agents[Math.floor(Math.random() * agents.length)].id;
     let text = "Interesting point. Who has a different view?";
 
@@ -281,8 +313,19 @@ export class OfflineBackend implements MeetingBackend {
     await wait(1500);
     return {
         text: `${agent.role} perspective: I think we should consider the scalability of this approach regarding ${topic}.`,
-        usedModel: 'offline'
+        usedModel: 'offline',
+        emotion: ['🤔', '😄', '😐', '😤'][Math.floor(Math.random() * 4)]
     };
+  }
+
+  async generateFistToFiveVote(agent: Agent, proposal: string, topic: string, history: Message[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<VoteResult & { usedModel: string }> {
+      await wait(500);
+      return {
+          agentId: agent.id,
+          score: Math.floor(Math.random() * 6),
+          reason: "Offline mock vote reason.",
+          usedModel: 'offline'
+      };
   }
   
   async checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, topic: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]> {
@@ -296,12 +339,12 @@ export class OfflineBackend implements MeetingBackend {
       return `# Meeting Minutes: ${topic}\n\n## Summary\n(Offline Mock Report)\n\n## Key Points\n- Point A\n- Point B\n\n## Conclusion\nMock Conclusion.`;
   }
 
-  async updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, isDark: boolean): Promise<WhiteboardData> {
+  async updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, currentData: WhiteboardData): Promise<WhiteboardData> {
     await wait(500);
+    // Return dummy structure for offline
     return {
-      summary: `Discussion about ${topic} (Offline Demo)`,
-      sections: [],
-      imageUrl: "https://images.unsplash.com/photo-1531403009284-440f080d1e12?ixlib=rb-4.0.3&auto=format&fit=crop&w=1000&q=80",
+      sections: [{ title: "Ideas", items: [{ text: "Offline Idea 1", type: "idea" }] }],
+      parkingLot: [],
       isGenerating: false
     };
   }
@@ -315,6 +358,10 @@ export class OfflineBackend implements MeetingBackend {
 export class GeminiBackend implements MeetingBackend {
   mode: MeetingMode = 'multi-agent';
   protected ai: GoogleGenAI;
+  
+  // State for Summarization Layer (Advice 3.1)
+  private conversationSummary: string = "";
+  private summarizedCount: number = 0;
 
   constructor() {
     this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -324,24 +371,62 @@ export class GeminiBackend implements MeetingBackend {
       return { ...globalStats };
   }
 
+  // Helper: Prepare Transcript with Dynamic Summary
+  // Advice 3.1: "Introduce a Summary Agent layer"
+  private async getTranscriptWithSummary(history: Message[], topic: string, lang: string): Promise<string> {
+      // Detect reset
+      if (history.length < this.summarizedCount) {
+          this.conversationSummary = "";
+          this.summarizedCount = 0;
+      }
+
+      const KEEP_RECENT = 10;
+      const unsummarizedCount = history.length - this.summarizedCount;
+
+      // If we have enough new messages to warrant a summary update (e.g. > 15 pending, keep last 10 raw)
+      if (unsummarizedCount > 15) {
+          const messagesToSummarize = history.slice(this.summarizedCount, history.length - KEEP_RECENT);
+          
+          if (messagesToSummarize.length > 0) {
+              const textChunk = messagesToSummarize.map(m => `${m.agentId}: ${m.text}`).join('\n');
+              
+              try {
+                  const prompt = SUMMARIZE_CONVERSATION_PROMPT(topic, lang, textChunk, this.conversationSummary);
+                  // Use light model for summarization
+                  const result = await callGemini(this.ai, prompt, undefined, 0.3, [], MODEL_NAME_CHECK);
+                  this.conversationSummary = result;
+                  this.summarizedCount += messagesToSummarize.length;
+                  DebugLogger.log(MODEL_NAME_CHECK, "Summarization Triggered", result, null);
+              } catch (e) {
+                  console.warn("Summarization failed with primary model, falling back to backup model", e);
+                  try {
+                      const prompt = SUMMARIZE_CONVERSATION_PROMPT(topic, lang, textChunk, this.conversationSummary);
+                      const result = await callGemini(this.ai, prompt, undefined, 0.3, [], MODEL_NAME_CHECK_BACKUP);
+                      this.conversationSummary = result;
+                      this.summarizedCount += messagesToSummarize.length;
+                      DebugLogger.log(MODEL_NAME_CHECK_BACKUP, "Summarization Triggered (Backup)", result, null);
+                  } catch (e2) {
+                      console.warn("Summarization backup failed, falling back to raw history", e2);
+                  }
+              }
+          }
+      }
+
+      // Construct final transcript: Summary + Recent Messages
+      const recentMessages = history.slice(this.summarizedCount);
+      const recentTranscript = recentMessages.map(m => `${m.agentId}: ${m.text}`).join('\n');
+
+      if (this.conversationSummary) {
+          return `[PREVIOUS_SUMMARY]\n${this.conversationSummary}\n\n[RECENT_TRANSCRIPT]\n${recentTranscript}`;
+      } else {
+          return recentTranscript;
+      }
+  }
+
   async generateTeam(topic: string, lang: string, files: Attachment[], baseModel: string): Promise<Agent[]> {
     return runWithRetry(async () => {
       const fileContext = files.length > 0 ? `Referece materials provided: ${files.map(f=>f.name).join(', ')}` : "";
-      const prompt = `
-        [META-ROLE]
-        You are an expert Team Architect AI. 
-        
-        [TASK]
-        Create a virtual team of 5 distinct experts to discuss: "${topic}".
-        Language for names/roles/instructions: "${lang}".
-        ${fileContext}
-        
-        Also generate:
-        1. A specific "interest" field for each agent. This is a topic, concept, or emotional nuance that this agent is deeply concerned about. If this topic comes up, they will want to speak up.
-        
-        [OUTPUT]
-        JSON format with name, role, systemInstruction, and interest.
-      `;
+      const prompt = TEAM_GENERATION_PROMPT(topic, lang, fileContext);
 
       const schema: Schema = {
         type: Type.OBJECT,
@@ -385,27 +470,12 @@ export class GeminiBackend implements MeetingBackend {
 
   async generateAgentIntro(agent: Agent, topic: string, lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult> {
       return runWithRetry(async () => {
-        const prompt = `
-            [ROLE]
-            You are ${agent.name}, a ${agent.role}.
-            Your traits: ${agent.systemInstruction}
-            
-            [TASK]
-            Write your opening statement for a meeting about "${topic}".
-            Language: "${lang}"
-            
-            [REQUIREMENTS]
-            - Do NOT say "Hello" or greetings. Jump straight into the analysis.
-            - Be specific to your role.
-            - 3-5 sentences.
-            - Point out specific problems/challenges regarding the topic from your unique perspective.
-            - Show your logical inference and reasoning.
-            - Present a future outlook or prediction.
-        `;
+        const prompt = AGENT_INTRO_PROMPT(agent, topic, lang);
         
         if (onPrompt) onPrompt(prompt);
 
         const modelToUse = agent.model || DEFAULT_MODEL;
+        // Basic intro usually doesn't need complex emotion parsing for now, or use simple
         return await callGeminiWithFallback(this.ai, prompt, undefined, 0.7, files, modelToUse);
     });
   }
@@ -421,8 +491,8 @@ export class GeminiBackend implements MeetingBackend {
         let techniqueList = "Diamond of Participation (Phased Discussion)";
         if (settings) {
             const active = [];
-            if (settings.sixThinkingHats) active.push("Six Thinking Hats (Mode Enforcement)");
-            if (settings.fistToFive) active.push("Fist-to-Five (Consensus Check)");
+            if (settings.sixThinkingHats) active.push("Six Thinking Hats (FULL CONTROL MODE: Moderator dictates Hat colors)");
+            if (settings.fistToFive) active.push("Fist-to-Five (Voting for Consensus)");
             if (settings.parkingLot) active.push("Parking Lot (For Off-topic)");
             if (settings.reframing) active.push("Reframing (Conflict Resolution)");
             
@@ -431,46 +501,7 @@ export class GeminiBackend implements MeetingBackend {
             }
         }
 
-        const prompt = `
-            [ROLE]
-            You are the "AI Facilitator" of a brainstorming session.
-            Your goal is NOT to participate in the debate yet, but to structure the User's request into a concrete discussion topic.
-            
-            [TONE]
-            Objective, Professional, Concise. Do not act as a specific character (like ${moderator.name}) yet.
-            
-            [MANDATORY BEHAVIOR]
-            1. **Polite & Gentle**: You must be polite and gentle to the User.
-            2. **Address the User**: Start with "User-san" (or appropriate honorific in ${lang}).
-            3. **Concise**: Your response must be short (under 50 words). Do not give long explanations.
-            
-            [CONTEXT]
-            User Input: "${topic}"
-            Language: "${lang}"
-            Active Techniques: "${techniqueList}"
-            
-            [HISTORY]
-            ${transcript}
-            
-            [TASK]
-            Determine if the "Meeting Goal" is clear and concrete.
-            A clear goal defines a specific output (e.g., "3 ideas", "Vote on one", "Pros/Cons list").
-            A vague goal is just a broad topic (e.g., "Marketing", "AI", "Future").
-            
-            [OUTPUT JSON]
-            If VAGUE: 
-            { 
-              "status": "CLARIFY", 
-              "text": "User-san, [Gentle clarifying question? Suggest concrete output]." 
-            }
-            
-            If CLEAR: 
-            { 
-              "status": "ACCEPTED", 
-              "text": "User-san, [Polite confirmation]. I will use these facilitation techniques: ${techniqueList}. Let's start.",
-              "refinedGoal": "A very concise summary of the agreed specific goal/topic (e.g. 'Create 3 marketing slogans for AI product')."
-            }
-        `;
+        const prompt = GOAL_NEGOTIATION_PROMPT(topic, lang, techniqueList, transcript, moderator.name);
 
         if (onPrompt) onPrompt(prompt);
 
@@ -505,13 +536,12 @@ export class GeminiBackend implements MeetingBackend {
       handRaisedSignals: HandRaiseSignal[] = [], 
       settings: ModerationSettings = DEFAULT_MODERATION_SETTINGS,
       meetingStage: 'divergence' | 'groan' | 'convergence' = 'divergence',
+      voteResults: VoteResult[] = [],
       onPrompt?: (prompt: string) => void
   ): Promise<ModeratorResponse & { usedModel: string }> {
     return runWithRetry(async () => {
-      // Optimization: Limit history
-      const transcript = history.slice(-15).map(m => `${m.agentId}: ${m.text}`).join('\n');
-      
-      const agentList = agents.map(a => `${a.id}: ${a.name} (${a.role})`).join('\n') + `\nuser: User (Participant)`;
+      // Use summarized transcript logic
+      const transcript = await this.getTranscriptWithSummary(history, topic, lang);
       
       // Construct Hand Raiser context
       let handRaiserContext = "None.";
@@ -522,19 +552,81 @@ export class GeminiBackend implements MeetingBackend {
           }).join('\n');
       }
 
+      // Vote Analysis Logic (Post-Vote) - STRICT LOGIC IMPLEMENTATION
+      let voteAnalysisInstruction = "";
+      if (voteResults && voteResults.length > 0) {
+          const resultsStr = voteResults.map(v => {
+              const agentName = agents.find(a => a.id === v.agentId)?.name || v.agentId;
+              // Remove reason text from prompt to ensure moderator relies only on scores
+              return `${agentName}: Score ${v.score}`;
+          }).join("\n");
+          
+          voteAnalysisInstruction = `
+            [PROTOCOL: FIST-TO-FIVE CONSENSUS CHECK]
+            VOTE RESULTS:
+            ${resultsStr}
+
+            ## LOGIC FLOW (STRICTLY FOLLOW)
+            CASE A: ALL scores are 3 or higher.
+            -> ACTION: Declare "Consensus Reached (Disagree and Commit)". Summarize the decision and move to next topic or wrap up.
+            
+            CASE B: ANY score is 2 or lower.
+            -> ACTION: Consensus FAILED. Do NOT use majority vote. Do NOT calculate averages.
+            -> NEXT SPEAKER: Select the agent with the LOWEST score (0, 1, or 2).
+            -> MODERATION TEXT: "We do not have consensus yet. [Agent Name], you voted [Score]. What specific condition or change is needed for you to move to a '3' (Consent)?"
+               (Focus on "Killer Question": ask for specific conditions to change their vote).
+          `;
+      }
+
       // Build Dynamic Instructions based on Phase & Settings
       let phaseInstruction = "";
-      if (meetingStage === 'divergence') {
-          phaseInstruction = "PHASE: DIVERGENCE (OPEN). Encourage BROAD ideas, but enforce GOAL RELEVANCE. If ideas are abstract, ask 'How does this solve the [TOPIC]?'.";
-      } else if (meetingStage === 'groan') {
-          phaseInstruction = "PHASE: GROAN ZONE (STRUGGLE). Identify conflicts and gaps. Do NOT just summarize; point out 'This idea lacks evidence' or 'These two views contradict'.";
-          if (settings.sixThinkingHats) {
-              phaseInstruction += " [OPTION ENABLED: SIX HATS] If stuck, ask everyone to switch to 'Black Hat' (Risks) or 'Green Hat' (Alternatives) explicitly.";
-          }
-      } else if (meetingStage === 'convergence') {
-          phaseInstruction = "PHASE: CONVERGENCE (CLOSE). Aggressively filter ideas. Discard abstract ones. Push for a final decision on [TOPIC].";
-          if (settings.fistToFive) {
-              phaseInstruction += " [OPTION ENABLED: FIST-TO-FIVE] You must explicitly check for consensus. If unsure, ask 'Let's do a Fist-to-Five check'. Pick agents who seem to disagree (score < 3).";
+      
+      if (settings.sixThinkingHats) {
+          // SIX HATS LOGIC (OVERRIDES STANDARD PHASES)
+          phaseInstruction = `
+            [SIX THINKING HATS MODE ENABLED]
+            You are controlling the meeting using the Six Thinking Hats method.
+            You must explicitly define which "Hat" the team is wearing for this phase.
+            
+            Sequence Guide:
+            1. White Hat (Facts & Info) - Start here.
+            2. Green Hat (Creativity & Alternatives) - Divergence.
+            3. Yellow Hat (Benefits) - Evaluation.
+            4. Black Hat (Cautions) - Evaluation.
+            5. Red Hat (Feelings) - Check-in.
+            6. Blue Hat (Process) - Summary & Next Steps.
+            
+            Current Phase Recommendation based on history:
+            - If early, focus on White or Green.
+            - If middle, focus on Yellow or Black.
+            - If late/stuck, use Red or Blue.
+            
+            INSTRUCTION:
+            - In your \`moderationText\`, explicitly state: "Let's put on the [Color] Hat. [Instruction for that hat]."
+            - Select the \`nextSpeakerId\` who can best contribute to the CURRENT Hat color.
+          `;
+      } else {
+          // STANDARD DIAMOND MODEL
+          if (meetingStage === 'divergence') {
+              phaseInstruction = "PHASE: DIVERGENCE (OPEN). Encourage BROAD ideas, but enforce GOAL RELEVANCE. If ideas are abstract, ask 'How does this solve the [TOPIC]?'.";
+          } else if (meetingStage === 'groan') {
+              phaseInstruction = "PHASE: GROAN ZONE (STRUGGLE). Identify conflicts and gaps. Do NOT just summarize; point out 'This idea lacks evidence' or 'These two views contradict'.";
+          } else if (meetingStage === 'convergence') {
+              phaseInstruction = "PHASE: CONVERGENCE (CLOSE). Aggressively filter ideas. Discard abstract ones. Push for a final decision on [TOPIC].";
+              
+              // Only suggest vote if enabled AND not currently analyzing a previous vote
+              if (settings.fistToFive && !voteAnalysisInstruction) {
+                  phaseInstruction += `
+                    [OPTION ENABLED: FIST-TO-FIVE] 
+                    You should explicitly check for consensus using the "Fist-to-Five" method.
+                    IF the discussion seems ripe for a decision OR you want to see where everyone stands:
+                    1. SUMMARIZE the specific proposal clearly.
+                    2. CALL FOR A VOTE.
+                    3. OUTPUT \`voteProposal\` field with the proposal text.
+                    4. Set \`moderationText\` to "Let's check consensus on [Proposal]. Fist-to-five. Ready... Go!".
+                    This will trigger a system event where all agents vote simultaneously.
+                  `;
+              }
           }
       }
 
@@ -546,58 +638,28 @@ export class GeminiBackend implements MeetingBackend {
           specializedTechniques += "- REFRAMING: If an agent is negative/aggressive, rephrase their attack into a 'Question' (e.g., 'It's impossible' -> 'How can we make it possible?'). Use the 'Sandwich' method (Praise -> Correction -> Praise).\n";
       }
 
-      const prompt = `
-        [META-ROLE]
-        You are the "Goal Guardian" and Moderator.
-        YOUR SUPREME MISSION: Ensure the team achieves the Goal: "${topic}".
-        
-        [CURRENT CONTEXT]
-        Topic/Goal: "${topic}"
-        Language: "${lang}"
-        Current Phase: ${meetingStage.toUpperCase()}
-        
-        [PHASE STRATEGY]
-        ${phaseInstruction}
-        
-        [ENABLED TECHNIQUES]
-        ${specializedTechniques}
-        
-        [TRANSCRIPT (LAST 15 TURNS)]
-        ${transcript}
-        
-        [HAND RAISERS (Active Signals)]
-        ${handRaiserContext}
-        
-        [CRITICAL INTERVENTION LOGIC - EXECUTE THIS FIRST]
-        1. **Check for Abstractness**: Did the last speaker use vague terms (e.g. "paradigm shift", "essence", "future") WITHOUT a concrete example?
-           - If YES: Intervene. "That is too abstract. Give me a concrete example regarding [${topic}]."
-        2. **Check for Drift**: Is the discussion drifting away from solving "${topic}"?
-           - If YES: Intervene immediately. "Let's return to the goal: [${topic}]."
-        
-        [SELECTION LOGIC]
-        1. **User Command**: If user gives a DIRECT INSTRUCTION (e.g. "Vote now", "Ask X"), FOLLOW IT immediately.
-        2. **Correction**: If steering is needed (Drift/Abstractness), pick the agent most likely to align with the goal, or pick 'user' to ask for guidance.
-        3. **Phase Logic**:
-           - Convergence: Prioritize 'SYNTHESIS' or 'SOLUTION' signals.
-           - Groan Zone: Prioritize 'OBJECTION' to clear doubts.
-           - Divergence: Encourage new voices ONLY IF they are relevant to [TOPIC].
-        4. **Silence**: Pick agent who hasn't spoken recently.
-        
-        [OUTPUT]
-        Decide who speaks next.
-        Provide "moderationText" (max 2 sentences).
-        OUTPUT JSON: { "nextSpeakerId": "...", "moderationText": "..." }
-      `;
+      const prompt = MODERATOR_TURN_PROMPT(
+          topic, 
+          lang, 
+          meetingStage, 
+          phaseInstruction, 
+          specializedTechniques, 
+          transcript, 
+          handRaiserContext, 
+          voteAnalysisInstruction
+      );
 
       if (onPrompt) onPrompt(prompt);
 
       const schema: Schema = {
         type: Type.OBJECT,
         properties: {
+          thought_process: { type: Type.STRING, description: "Internal reasoning about the conversation flow." },
           nextSpeakerId: { type: Type.STRING },
           moderationText: { type: Type.STRING },
+          voteProposal: { type: Type.STRING, description: "The specific proposal to vote on. Only used when initiating Fist-to-Five." }
         },
-        required: ["nextSpeakerId", "moderationText"]
+        required: ["thought_process", "nextSpeakerId", "moderationText"]
       };
 
       const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.5, files, model);
@@ -608,49 +670,61 @@ export class GeminiBackend implements MeetingBackend {
 
   async generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult> {
     return runWithRetry(async () => {
-      // Optimization: Limit history
-      const transcript = history.slice(-15).map(m => {
-        const name = m.agentId === 'user' ? 'User' : allAgents.find(a => a.id === m.agentId)?.name || 'Unknown';
-        return `${name}: ${m.text}`;
-      }).join('\n');
+      // Use summarized transcript logic
+      const transcript = await this.getTranscriptWithSummary(history, topic, lang);
 
-      const prompt = `
-        [META-INSTRUCTION]
-        You are participating in a meeting.
-        GOAL: "${topic}"
-        
-        [CHARACTER PROFILE]
-        Name: ${agent.name}
-        Role: ${agent.role}
-        Traits: ${agent.systemInstruction}
-        Core Interest: ${agent.interest || 'None'}
-        
-        [SCENE CONTEXT]
-        Meeting Topic: "${topic}"
-        Language: "${lang}"
-        
-        [TRANSCRIPT (LAST 15 TURNS)]
-        ${transcript}
-        
-        [MANDATORY BEHAVIOR]
-        1. **Goal Orientation**: Your specific opinions are important, but they MUST serve the Goal ("${topic}").
-        2. **NO ABSTRACT PHILOSOPHY**: Do not just state general theories. You MUST propose a specific action, solution, or risk relevant to "${topic}".
-           - Bad: "We need a paradigm shift."
-           - Good: "To achieve [TOPIC], we must change X to Y immediately."
-        3. **Stay in Character**: Use your persona's tone, but apply it constructively.
-        
-        [ACTION]
-        As ${agent.name}, generate a response that moves the discussion towards the Goal.
-        
-        [LENGTH RULE]
-        - General: Be CONCISE (1-2 sentences).
-        - Exception: If explaining a complex concept, correcting a major misunderstanding, or your INTEREST was triggered, you may speak longer (3-4 sentences).
-      `;
+      const prompt = AGENT_RESPONSE_PROMPT(agent, topic, lang, transcript);
 
       if (onPrompt) onPrompt(prompt);
 
-      return await callGeminiWithFallback(this.ai, prompt, undefined, 0.7, files, agent.model || DEFAULT_MODEL);
+      // Define Schema for structured output (Text + Emotion)
+      const schema: Schema = {
+          type: Type.OBJECT,
+          properties: {
+              text: { type: Type.STRING },
+              emotion: { type: Type.STRING, description: "A single emoji representing facial expression." }
+          },
+          required: ["text", "emotion"]
+      };
+
+      const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.7, files, agent.model || DEFAULT_MODEL);
+      const parsed = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+      
+      return {
+          text: parsed.text,
+          emotion: parsed.emotion,
+          usedModel: result.usedModel
+      };
     });
+  }
+
+  async generateFistToFiveVote(agent: Agent, proposal: string, topic: string, history: Message[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<VoteResult & { usedModel: string }> {
+      return runWithRetry(async () => {
+          // Now passing 'lang' correctly to the prompt
+          const prompt = FIST_TO_FIVE_VOTE_PROMPT(agent, proposal, topic, lang);
+          
+          if (onPrompt) onPrompt(prompt);
+
+          const schema: Schema = {
+              type: Type.OBJECT,
+              properties: {
+                  score: { type: Type.INTEGER, minimum: 0, maximum: 5 },
+                  reason: { type: Type.STRING }
+              },
+              required: ["score", "reason"]
+          };
+
+          const modelToUse = agent.model || DEFAULT_MODEL;
+          const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.3, files, modelToUse);
+          const data = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+          
+          return {
+              agentId: agent.id,
+              score: data.score,
+              reason: data.reason,
+              usedModel: result.usedModel
+          };
+      });
   }
 
   async checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, topic: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]> {
@@ -664,36 +738,10 @@ export class GeminiBackend implements MeetingBackend {
               name: a.name,
               interest: a.interest || "General"
           }));
+          const listenersJson = JSON.stringify(listeners);
           
-          const prompt = `
-            [TASK]
-            Analyze the "Last Message" and determine if it triggers the specific "Interests" of any listeners.
-            Meeting Goal: "${topic}" 
-            
-            [CRITERIA FOR RAISING HAND]
-            1. **Direct Mention**: The listener was explicitly named.
-            2. **Contribution to Goal**: Can the listener provide a solution that bridges the gap or moves the discussion closer to the final goal? (Type: SYNTHESIS or SOLUTION)
-            3. **Conflict/Challenge**: The Last Message contradicts the listener's "Interest" or beliefs. (Type: OBJECTION)
-            4. **Strong Relevance**: The topic deeply activates their specific expertise. (Type: COMMENT)
-            
-            [PRIORITY]
-            Prioritize agents who can "Synthesize" or "Advance" the topic over those who just want to "Object" or "Agree".
-            
-            [PROHIBITION]
-            Do NOT raise hand just to agree, nod, or say "I agree". 
-            Only raise hand if the agent has a SUBSTANTIAL contribution.
-            
-            [LAST MESSAGE]
-            "${lastMessage.text}"
-            
-            [LISTENERS & INTERESTS]
-            ${JSON.stringify(listeners)}
-            
-            [OUTPUT]
-            Return a JSON object with a list of signals.
-            Format: { "signals": [{ "agentId": "id", "type": "SYNTHESIS", "reason": "Structure the argument..." }] }
-            Type options: "SYNTHESIS", "SOLUTION", "OBJECTION", "COMMENT", "SUPPORT".
-          `;
+          // Now passing 'lang' correctly to the prompt
+          const prompt = CHECK_HAND_RAISES_PROMPT(topic, lastMessage.text, listenersJson, lang);
           
           if (onPrompt) onPrompt(prompt);
 
@@ -716,14 +764,23 @@ export class GeminiBackend implements MeetingBackend {
             required: ["signals"]
           };
           
-          try {
-              const result = await callGemini(this.ai, prompt, schema, 0.3, [], MODEL_NAME_CHECK); 
-              const data = JSON.parse(result.replace(/```json|```/g, "").trim());
+          const executeCheck = async (model: string) => {
+              const res = await callGemini(this.ai, prompt, schema, 0.3, [], model); 
+              const data = JSON.parse(res.replace(/```json|```/g, "").trim());
               return data.signals || [];
+          };
+
+          try {
+              return await executeCheck(MODEL_NAME_CHECK);
           } catch (e) {
-               const errorMsg = e instanceof Error ? e.message : String(e);
-               DebugLogger.log(MODEL_NAME_CHECK, prompt, null, `[HandCheck Error] ${errorMsg}`);
-               return [];
+               console.warn(`[HandCheck] Primary model failed, trying backup (${MODEL_NAME_CHECK_BACKUP})...`);
+               try {
+                   return await executeCheck(MODEL_NAME_CHECK_BACKUP);
+               } catch (e2) {
+                   const errorMsg = e2 instanceof Error ? e2.message : String(e2);
+                   DebugLogger.log(MODEL_NAME_CHECK_BACKUP, prompt, null, `[HandCheck Backup Error] ${errorMsg}`);
+                   return [];
+               }
           }
       });
   }
@@ -735,118 +792,61 @@ export class GeminiBackend implements MeetingBackend {
              return `${name}: ${m.text}`;
          }).join('\n');
 
-         const prompt = `
-            [TASK]
-            Generate a structured meeting minutes report based on the transcript.
-            
-            [CONTEXT]
-            Topic: "${topic}"
-            Language: "${lang}"
-            
-            [TRANSCRIPT]
-            ${transcript}
-            
-            [OUTPUT FORMAT]
-            Markdown format.
-            - # Title (Topic)
-            - ## Date & Participants
-            - ## Summary (Executive Summary)
-            - ## Key Arguments (Pros/Cons or Perspectives)
-            - ## Decisions / Conclusions
-            - ## Action Items (if any)
-         `;
+         const prompt = GENERATE_MINUTES_PROMPT(topic, lang, transcript);
 
          return await callGeminiWithFallback(this.ai, prompt, undefined, 0.5, [], model).then(res => res.text);
      });
   }
 
-  async updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, isDark: boolean): Promise<WhiteboardData> {
+  async updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, currentData: WhiteboardData): Promise<WhiteboardData> {
       return runWithRetry(async () => {
           const transcript = history.slice(-15).map(m => { // Last 15 messages
              const name = m.agentId === 'user' ? 'User' : agents.find(a => a.id === m.agentId)?.name || 'Unknown';
              return `${name}: ${m.text}`; 
           }).join('\n');
 
-          const prompt = `
-            [ROLE]
-            You are a real-time graphic facilitator.
-            
-            [TASK]
-            Update the whiteboard content based on the latest discussion.
-            Topic: "${topic}"
-            Language: "${lang}"
-            
-            [TRANSCRIPT (LATEST)]
-            ${transcript}
-            
-            [OUTPUT REQUIREMENTS]
-            1. "summary": One concise sentence summarizing the current state.
-            2. "sections": Identify 2-4 key themes/columns (e.g. Pros, Cons, Ideas, Action Items) and list bullet points.
-            3. "visualPrompt": A prompt to generate a conceptual image representing the abstract map of the discussion (e.g. "Mindmap of marketing strategy, neon style").
-            
-            Return JSON.
-          `;
+          const prompt = UPDATE_WHITEBOARD_PROMPT(topic, lang, transcript, JSON.stringify(currentData));
           
           const schema: Schema = {
              type: Type.OBJECT,
              properties: {
-                 summary: { type: Type.STRING },
                  sections: {
                      type: Type.ARRAY,
                      items: {
                          type: Type.OBJECT,
                          properties: {
                              title: { type: Type.STRING },
-                             items: { type: Type.ARRAY, items: { type: Type.STRING } }
-                         }
+                             items: { 
+                                 type: Type.ARRAY, 
+                                 items: { 
+                                     type: Type.OBJECT,
+                                     properties: {
+                                         text: { type: Type.STRING },
+                                         type: { type: Type.STRING, enum: ['info', 'idea', 'concern', 'decision'] }
+                                     },
+                                     required: ["text", "type"]
+                                 } 
+                             }
+                         },
+                         required: ["title", "items"]
                      }
                  },
-                 visualPrompt: { type: Type.STRING }
+                 parkingLot: {
+                     type: Type.ARRAY,
+                     items: { type: Type.STRING }
+                 }
              },
-             required: ["summary", "sections", "visualPrompt"]
+             required: ["sections", "parkingLot"]
           };
           
           const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.5, [], DEFAULT_MODEL);
           const data = JSON.parse(result.text.replace(/```json|```/g, "").trim());
           
-          let imageUrl = undefined;
-          try {
-              if (data.visualPrompt) {
-                  const imagePrompt = `A high quality professional whiteboard diagram or mindmap visualization about: ${data.visualPrompt}. Clean, minimal, business style. ${isDark ? "Dark mode, neon accents" : "White background, marker style"}. No text.`;
-                  
-                  const imageResp = await this.ai.models.generateContent({
-                      model: MODEL_NAME_IMAGE,
-                      contents: { parts: [{ text: imagePrompt }] },
-                      config: {
-                          imageConfig: {
-                              aspectRatio: "16:9",
-                              imageSize: "1K"
-                          }
-                      }
-                  });
-                  
-                  for (const part of imageResp.candidates?.[0]?.content?.parts || []) {
-                      if (part.inlineData) {
-                          imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-                          break;
-                      }
-                  }
-                  
-                  if (!globalStats.byModel[MODEL_NAME_IMAGE]) globalStats.byModel[MODEL_NAME_IMAGE] = { apiCalls: 0, inputTokens: 0, outputTokens: 0 };
-                  globalStats.byModel[MODEL_NAME_IMAGE].apiCalls++;
-                  
-                  DebugLogger.log(MODEL_NAME_IMAGE, imagePrompt, "Image Data Generated", null);
-              }
-          } catch (e: any) {
-              const errorMsg = e.message || String(e);
-              console.warn("Failed to generate whiteboard image", e);
-              DebugLogger.log(MODEL_NAME_IMAGE, `(Image Gen) ${data.visualPrompt}`, null, errorMsg);
-          }
+          // No image generation here as per prompt strategy
 
           return {
-              summary: data.summary,
               sections: data.sections || [],
-              imageUrl: imageUrl,
+              parkingLot: data.parkingLot || [],
               isGenerating: false
           };
       });

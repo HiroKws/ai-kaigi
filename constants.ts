@@ -1,5 +1,5 @@
 
-import { Agent, ModerationSettings } from './types';
+import { Agent, ModerationSettings, WhiteboardData } from './types';
 
 // IDs and tiers remain constant
 export const MODEL_OPTIONS = [
@@ -29,9 +29,9 @@ export const MODEL_SHORT_NAMES: Record<string, string> = {
   'offline': 'offline'
 };
 
-// All options ON by default as requested
+// Six Hats OFF by default, others ON
 export const DEFAULT_MODERATION_SETTINGS: ModerationSettings = {
-    sixThinkingHats: true,
+    sixThinkingHats: false,
     fistToFive: true,
     parkingLot: true, 
     reframing: true,  
@@ -85,10 +85,9 @@ export const AGENTS: Agent[] = [
   }
 ];
 
-export const INITIAL_WHITEBOARD_STATE = {
-  summary: "Whiteboard updates are currently paused.",
+export const INITIAL_WHITEBOARD_STATE: WhiteboardData = {
   sections: [],
-  imageUrl: undefined,
+  parkingLot: [],
   isGenerating: false
 };
 
@@ -103,10 +102,9 @@ export const LANGUAGES = [
   { code: 'pt', name: 'Português' },
 ];
 
-export const TRANSLATIONS: Record<string, any> = {
-  en: {
-    title: "AI Brainstorm Board",
-    subtitle: "Design your perfect AI brainstorming team",
+const enTranslations = {
+    title: "AI Discussion Board",
+    subtitle: "Design your perfect AI discussion team",
     topicLabel: "What is the meeting goal/topic?",
     topicPlaceholder: "e.g., Create 3 marketing strategies for Q4...",
     quickStart: "Quick Start (Auto-Assign)",
@@ -129,34 +127,29 @@ export const TRANSLATIONS: Record<string, any> = {
     deletePreset: "Delete",
     debugMode: "Debug Mode",
     debugModeDesc: "Append used model name to messages",
-    
-    // Moderation Options
+    attach: "Attach",
     moderationOptions: "Moderation Options",
     modOptTitle: "Advanced Facilitation Settings",
     modOptDesc: "Customize how the AI Moderator controls the flow.",
-    
     diamondTitle: "💎 The Diamond of Participation",
     diamondDesc: "This system ALWAYS follows the 'Diamond' model. The meeting will automatically progress through three phases based on turn count and context:",
     diamondPhase1: "1. Divergence: Generating many ideas (Open)",
     diamondPhase2: "2. Groan Zone: Structuring conflict (Struggle)",
     diamondPhase3: "3. Convergence: Narrowing down to a decision (Close)",
-    
     optSixHats: "Six Thinking Hats",
-    optSixHatsDesc: "Moderator can enforce a specific 'Thinking Mode' (e.g., 'Everyone focus on Risks') when the discussion is stuck.",
+    optSixHatsDesc: "Moderator controls the discussion mode (White/Red/Black/Yellow/Green/Blue) from start to finish.",
     optFistToFive: "Fist to Five (Consensus Check)",
-    optFistToFiveDesc: "In the Convergence phase, Moderator will check consensus (0-5 scale) and prioritize those who disagree.",
+    optFistToFiveDesc: "In the Convergence phase, Moderator will define a proposal and ask for a 0-5 vote. Low scores are addressed.",
     optParkingLot: "Parking Lot",
     optParkingLotDesc: "Moderator will 'park' off-topic ideas to keep the discussion focused without dismissing them.",
     optReframing: "Reframing & Sandwich",
     optReframingDesc: "Moderator rephrases negative comments into 'questions' and sandwiches critique with praise.",
-
     modeLabel: "Operation Mode",
     modeMulti: "Individual AI Models",
     modeMultiDesc: "Highest Quality. 1 AI per participant.",
     modeOffline: "Offline Mode (Demo)",
     modeOfflineDesc: "Demo only. No API usage.",
     offlineTooltip: "Demo mode to check UI without calling API",
-    
     upload: "Upload Reference Material",
     addTextNote: "Add Note",
     textNoteTitle: "Note Title (Optional)",
@@ -164,9 +157,9 @@ export const TRANSLATIONS: Record<string, any> = {
     add: "Add",
     cancel: "Cancel",
     filesAttached: "Files attached",
-    viewLog: "View Log", // Deprecated key, kept for safety
-    viewList: "List View", // New key
-    downloadLogs: "Debug Logs", // New key
+    viewLog: "View Log", 
+    viewList: "List View", 
+    downloadLogs: "Debug Logs", 
     viewRoom: "View Room",
     endMeeting: "End Meeting",
     endMeetingConfirmTitle: "End Meeting?",
@@ -191,9 +184,7 @@ export const TRANSLATIONS: Record<string, any> = {
     statsInput: "Input",
     statsOutput: "Output",
     statsTotal: "Total",
-
-    // Meeting Screen
-    meetingTitle: "Gemini Brainstorm Board",
+    meetingTitle: "Gemini Discussion Board",
     meetingSubtitle: "Multi-Agent Meeting System",
     participants: "Participants",
     chatPlaceholder: "Clarify goal or interject...",
@@ -201,7 +192,7 @@ export const TRANSLATIONS: Record<string, any> = {
     whiteboardUpdating: "Updating...",
     summaryTitle: "Current Summary",
     visualMapTitle: "Visual Map",
-    emptyWhiteboard: "Whiteboard updates are pending future specifications.",
+    emptyWhiteboard: "Whiteboard updates are pending.",
     offlineMarker: "(No AI)",
     config: "Config",
     topic: "Topic/Goal",
@@ -213,8 +204,6 @@ export const TRANSLATIONS: Record<string, any> = {
     userPresets: "Your Saved Teams",
     thinking: "Thinking...",
     kickoffMessage: 'The topic is "{topic}". Let\'s start by hearing initial thoughts from everyone in turn. We\'ll start with {name} ({role}). Please go ahead.',
-    
-    // Team Names
     presetTeams: {
       tech_giants: "AI Giants",
       jp_net_commentators: "JP Net Commentators",
@@ -228,9 +217,10 @@ export const TRANSLATIONS: Record<string, any> = {
       geniuses: "Geniuses",
       gods: "Gods"
     }
-  },
-  ja: {
-    title: "AIブレインストーム・ボード",
+};
+
+const jaTranslations = {
+    title: "AIディスカッションボード",
     subtitle: "AIチームがあなたの課題を議論します",
     topicLabel: "会議のゴール（目的）は何ですか？",
     topicPlaceholder: "例：来期の販促アイデアを3つ決める...",
@@ -254,34 +244,29 @@ export const TRANSLATIONS: Record<string, any> = {
     deletePreset: "削除",
     debugMode: "デバッグモード",
     debugModeDesc: "発言の末尾に使用したモデル名を追記します",
-    
-    // Moderation Options
+    attach: "添付",
     moderationOptions: "モデレーション設定",
     modOptTitle: "高度なファシリテーション設定",
     modOptDesc: "AI司会者の進行スタイルをカスタマイズします。",
-    
     diamondTitle: "💎 参加のダイヤモンド (必須)",
     diamondDesc: "このシステムは常に「参加のダイヤモンド」モデルに従います。会話数と文脈に応じて、自動的に3つのフェーズを進行します：",
     diamondPhase1: "1. 発散 (Divergence): 多くのアイデアを出す",
     diamondPhase2: "2. 呻き (Groan Zone): 対立や混乱を整理する",
     diamondPhase3: "3. 収束 (Convergence): 結論に向けて絞り込む",
-    
-    optSixHats: "シックス・シンキング・ハッツ (思考モード強制)",
-    optSixHatsDesc: "議論が停滞した際、司会者が「今は全員リスクについて話して」と思考モードを強制し、視点を統一します。",
-    optFistToFive: "Fist to Five (合意形成チェック)",
-    optFistToFiveDesc: "収束フェーズで、司会者が0〜5の数字で合意度を確認し、反対者(スコア2以下)の意見を優先的に拾います。",
+    optSixHats: "シックス・シンキング・ハッツ",
+    optSixHatsDesc: "司会者が「思考の帽子」を指定し、全員がその色（視点）に基づいて発言するようコントロールします。",
+    optFistToFive: "Fist to Five (合意形成)",
+    optFistToFiveDesc: "収束フェーズで司会者が提案をまとめ、0〜5の数字で一斉投票を行います。反対者(0-2)を優先フォローします。",
     optParkingLot: "パーキングロット (駐車場)",
     optParkingLotDesc: "本筋から逸れたアイデアを「今は扱わない重要な意見」として保留し、議論の脱線を防ぎます。",
     optReframing: "リフレーミング & サンドイッチ介入",
     optReframingDesc: "否定的な発言を「問い」に変換し、批判を肯定的な言葉で挟んで伝えることで、心理的安全性を保ちます。",
-
     modeLabel: "動作モード",
     modeMulti: "個別AIモデル",
     modeMultiDesc: "最高品質。参加者1名につきAI1体。",
     modeOffline: "オフラインモード (デモ)",
     modeOfflineDesc: "API未使用デモ。",
     offlineTooltip: "APIを呼び出さずに、UIを確認するデモモード",
-
     upload: "参考資料をアップロード",
     addTextNote: "テキスト追加",
     textNoteTitle: "タイトル (任意)",
@@ -316,9 +301,7 @@ export const TRANSLATIONS: Record<string, any> = {
     statsInput: "入力",
     statsOutput: "出力",
     statsTotal: "合計",
-
-    // Meeting Screen
-    meetingTitle: "AIブレインストーム・ボード",
+    meetingTitle: "AIディスカッションボード",
     meetingSubtitle: "マルチエージェント会議システム",
     participants: "参加者",
     chatPlaceholder: "ゴールを明確化、または議論に参加...",
@@ -326,7 +309,7 @@ export const TRANSLATIONS: Record<string, any> = {
     whiteboardUpdating: "更新中...",
     summaryTitle: "現在の要約",
     visualMapTitle: "可視化マップ",
-    emptyWhiteboard: "ホワイトボード機能は現在調整中です。",
+    emptyWhiteboard: "ホワイトボード更新待機中。",
     offlineMarker: "(AI未使用)",
     config: "設定",
     topic: "ゴール/テーマ",
@@ -338,8 +321,6 @@ export const TRANSLATIONS: Record<string, any> = {
     userPresets: "保存済みチーム",
     thinking: "考え中…",
     kickoffMessage: 'テーマは「{topic}」です。まずは、皆さんのご意見を順番にお聞きしたいと思います。では、{role}の{name}さん。お願いします。',
-    
-    // Team Names
     presetTeams: {
       tech_giants: "AI界隈の巨人",
       jp_net_commentators: "日本のネット論客",
@@ -353,7 +334,177 @@ export const TRANSLATIONS: Record<string, any> = {
       geniuses: "天才科学者",
       gods: "神々"
     }
-  },
-  // Other languages default to English for new keys if not explicitly added, 
-  // but let's add minimal keys to avoid crashes
+};
+
+const frTranslations = {
+    ...enTranslations,
+    title: "Conseil de Discussion IA",
+    subtitle: "Concevez votre équipe de discussion IA parfaite",
+    topicLabel: "Quel est l'objectif/sujet de la réunion ?",
+    quickStart: "Démarrage Rapide",
+    customize: "Personnaliser",
+    start: "Commencer la Réunion",
+    moderator: "Modérateur",
+    participants: "Participants",
+    add: "Ajouter",
+    cancel: "Annuler",
+    save: "Sauvegarder",
+    viewRoom: "Voir la Salle",
+    viewList: "Vue Liste",
+    statsLabel: "Statistiques",
+    statsCalls: "Appels",
+    statsInput: "Entrée",
+    statsOutput: "Sortie",
+    whiteboardTitle: "Tableau Blanc",
+    whiteboardUpdating: "Mise à jour...",
+    endMeeting: "Terminer",
+    generateMinutes: "Générer CR",
+    justEnd: "Juste Terminer",
+    kickoffMessage: 'Le sujet est "{topic}". Commençons par entendre les premières pensées de chacun à tour de rôle. Nous commencerons par {name} ({role}). Allez-y s\'il vous plaît.',
+};
+
+const deTranslations = {
+    ...enTranslations,
+    title: "KI-Diskussionsboard",
+    subtitle: "Entwerfen Sie Ihr perfektes KI-Diskussionsteam",
+    topicLabel: "Was ist das Ziel/Thema des Meetings?",
+    quickStart: "Schnellstart",
+    customize: "Anpassen",
+    start: "Meeting Starten",
+    moderator: "Moderator",
+    participants: "Teilnehmer",
+    add: "Hinzufügen",
+    cancel: "Abbrechen",
+    save: "Speichern",
+    viewRoom: "Raum Ansehen",
+    viewList: "Listenansicht",
+    statsLabel: "Statistiken",
+    statsCalls: "Anrufe",
+    statsInput: "Eingabe",
+    statsOutput: "Ausgabe",
+    whiteboardTitle: "Whiteboard",
+    whiteboardUpdating: "Aktualisierung...",
+    endMeeting: "Beenden",
+    generateMinutes: "Protokoll Erstellen",
+    justEnd: "Nur Beenden",
+    kickoffMessage: 'Das Thema ist "{topic}". Lassen Sie uns zunächst nacheinander die ersten Gedanken hören. Wir beginnen mit {name} ({role}). Bitte fahren Sie fort.',
+};
+
+const itTranslations = {
+    ...enTranslations,
+    title: "Scheda Discussione IA",
+    subtitle: "Progetta il tuo team di discussione IA perfetto",
+    topicLabel: "Qual è l'obiettivo/argomento della riunione?",
+    quickStart: "Avvio Rapido",
+    customize: "Personalizza",
+    start: "Inizia Riunione",
+    moderator: "Moderatore",
+    participants: "Partecipanti",
+    add: "Aggiungi",
+    cancel: "Annulla",
+    save: "Salva",
+    viewRoom: "Vedi Stanza",
+    viewList: "Vedi Elenco",
+    statsLabel: "Statistiche",
+    statsCalls: "Chiamate",
+    statsInput: "Input",
+    statsOutput: "Output",
+    whiteboardTitle: "Lavagna",
+    whiteboardUpdating: "Aggiornamento...",
+    endMeeting: "Termina",
+    generateMinutes: "Genera Verbale",
+    justEnd: "Solo Termina",
+    kickoffMessage: 'L\'argomento è "{topic}". Iniziamo ascoltando i pensieri iniziali di tutti a turno. Inizieremo con {name} ({role}). Prego.',
+};
+
+const zhTranslations = {
+    ...enTranslations,
+    title: "AI 讨论板",
+    subtitle: "设计您完美的 AI 讨论团队",
+    topicLabel: "会议的目标/主题是什么？",
+    quickStart: "快速开始",
+    customize: "自定义团队",
+    start: "开始会议",
+    moderator: "主持人",
+    participants: "参与者",
+    add: "添加",
+    cancel: "取消",
+    save: "保存",
+    viewRoom: "查看房间",
+    viewList: "列表视图",
+    statsLabel: "统计数据",
+    statsCalls: "调用",
+    statsInput: "输入",
+    statsOutput: "输出",
+    whiteboardTitle: "白板",
+    whiteboardUpdating: "更新中...",
+    endMeeting: "结束会议",
+    generateMinutes: "生成纪要",
+    justEnd: "直接结束",
+    kickoffMessage: '主题是“{topic}”。让我们首先轮流听听大家的初步想法。我们将从 {name} ({role}) 开始。请继续。',
+};
+
+const koTranslations = {
+    ...enTranslations,
+    title: "AI 토론 보드",
+    subtitle: "완벽한 AI 토론 팀을 설계하세요",
+    topicLabel: "회의 목표/주제는 무엇입니까?",
+    quickStart: "빠른 시작",
+    customize: "사용자 지정",
+    start: "회의 시작",
+    moderator: "사회자",
+    participants: "참가자",
+    add: "추가",
+    cancel: "취소",
+    save: "저장",
+    viewRoom: "룸 보기",
+    viewList: "목록 보기",
+    statsLabel: "통계",
+    statsCalls: "호출",
+    statsInput: "입력",
+    statsOutput: "출력",
+    whiteboardTitle: "화이트보드",
+    whiteboardUpdating: "업데이트 중...",
+    endMeeting: "회의 종료",
+    generateMinutes: "회의록 생성",
+    justEnd: "그냥 종료",
+    kickoffMessage: '주제는 "{topic}"입니다. 먼저 돌아가며 초기 생각을 들어보겠습니다. {name} ({role})부터 시작하겠습니다. 말씀해 주세요.',
+};
+
+const ptTranslations = {
+    ...enTranslations,
+    title: "Quadro de Discussão IA",
+    subtitle: "Projete sua equipe de discussão IA perfeita",
+    topicLabel: "Qual é o objetivo/tópico da reunião?",
+    quickStart: "Início Rápido",
+    customize: "Personalizar",
+    start: "Iniciar Reunião",
+    moderator: "Moderador",
+    participants: "Participantes",
+    add: "Adicionar",
+    cancel: "Cancelar",
+    save: "Salvar",
+    viewRoom: "Ver Sala",
+    viewList: "Ver Lista",
+    statsLabel: "Estatísticas",
+    statsCalls: "Chamadas",
+    statsInput: "Entrada",
+    statsOutput: "Saída",
+    whiteboardTitle: "Quadro Branco",
+    whiteboardUpdating: "Atualizando...",
+    endMeeting: "Encerrar",
+    generateMinutes: "Gerar Ata",
+    justEnd: "Apenas Encerrar",
+    kickoffMessage: 'O tópico é "{topic}". Vamos começar ouvindo as ideias iniciais de todos, um por um. Começaremos com {name} ({role}). Por favor, prossiga.',
+};
+
+export const TRANSLATIONS: Record<string, typeof enTranslations> = {
+  en: enTranslations,
+  ja: jaTranslations,
+  fr: frTranslations,
+  de: deTranslations,
+  it: itTranslations,
+  zh: zhTranslations,
+  ko: koTranslations,
+  pt: ptTranslations
 };

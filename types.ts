@@ -1,5 +1,4 @@
 
-
 export interface Attachment {
   name: string;
   mimeType: string;
@@ -13,6 +12,7 @@ export interface Agent {
   avatarColor: string;
   systemInstruction: string;
   interest?: string; // New field: Specific area of interest that triggers reaction
+  currentEmotion?: string; // NEW: Current facial expression (emoji)
   initialMessage?: string; // Pre-generated opening statement
   initialMessageModel?: string; // The specific model that generated the initial message
   model?: string; // Specific Gemini model ID for this agent
@@ -26,20 +26,18 @@ export interface Message {
 }
 
 export interface WhiteboardItem {
-  id: string;
   text: string;
-  category: 'idea' | 'problem' | 'solution' | 'action';
+  type: 'info' | 'idea' | 'concern' | 'decision';
 }
 
 export interface WhiteboardSection {
   title: string;
-  items: string[];
+  items: WhiteboardItem[];
 }
 
 export interface WhiteboardData {
-  summary: string;
   sections: WhiteboardSection[];
-  imageUrl?: string; // Changed from mermaidDiagram to imageUrl
+  parkingLot: string[];
   isGenerating?: boolean;
 }
 
@@ -72,12 +70,21 @@ export type MeetingMode = 'multi-agent' | 'offline';
 export interface ModeratorResponse {
   nextSpeakerId: string;
   moderationText: string;
+  // If present, triggers the voting phase with this proposal
+  voteProposal?: string;
 }
 
 // Wrapper to generation result including metadata
 export interface GenerationResult {
     text: string;
+    emotion?: string; // NEW: Extracted emotion emoji
     usedModel: string;
+}
+
+export interface VoteResult {
+    agentId: string;
+    score: number; // 0-5
+    reason: string;
 }
 
 export interface NegotiationResult {
@@ -124,17 +131,22 @@ export interface MeetingBackend {
       handRaisedSignals?: HandRaiseSignal[], 
       settings?: ModerationSettings, 
       meetingStage?: 'divergence' | 'groan' | 'convergence',
+      voteResults?: VoteResult[], // Pass previous vote results for analysis
       onPrompt?: (prompt: string) => void
   ): Promise<ModeratorResponse & { usedModel?: string }>;
   
   generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult>;
   
+  // New method specifically for Fist-to-Five voting
+  generateFistToFiveVote(agent: Agent, proposal: string, topic: string, history: Message[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<VoteResult & { usedModel: string }>;
+
   // New method to check reactions - Returns structured signals now
   checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, topic: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]>;
   
   // New method to generate meeting minutes
   generateMinutes(topic: string, history: Message[], agents: Agent[], lang: string, model: string): Promise<string>;
 
-  updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, isDark: boolean): Promise<WhiteboardData>;
+  // Updated to accept current state for incremental updates
+  updateWhiteboard(topic: string, history: Message[], agents: Agent[], lang: string, currentData: WhiteboardData): Promise<WhiteboardData>;
   getStats(): UsageStats;
 }

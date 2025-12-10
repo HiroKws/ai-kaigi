@@ -26,8 +26,12 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   const [showFallback, setShowFallback] = useState(false);
   const [mode, setMode] = useState<MeetingMode>('multi-agent');
   
-  // Model Selection
-  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
+  // Model Selection - Split into Moderator and Participants
+  const [moderatorModel, setModeratorModel] = useState<string>('gemini-3-pro-preview');
+  const [participantModel, setParticipantModel] = useState<string>('gemini-2.5-flash-lite');
+  
+  // Bulk Apply Model Selection (defaults to participant model)
+  const [bulkModel, setBulkModel] = useState<string>('gemini-2.5-flash-lite');
 
   // Saved Configs State
   const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
@@ -73,11 +77,12 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
           setAgents(validatedAgents);
       }
       
-      // Validate selected global model
-      const validGlobal = validateModel(selectedModel);
-      if (validGlobal !== selectedModel) {
-          setSelectedModel(validGlobal);
-      }
+      // Validate selected global models
+      const validMod = validateModel(moderatorModel);
+      if (validMod !== moderatorModel) setModeratorModel(validMod);
+      
+      const validPart = validateModel(participantModel);
+      if (validPart !== participantModel) setParticipantModel(validPart);
   }, []);
 
   useEffect(() => {
@@ -90,6 +95,11 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       }
     }
   }, []);
+
+  // Update bulk model when participant model changes in initial screen
+  useEffect(() => {
+      setBulkModel(participantModel);
+  }, [participantModel]);
 
   const handleLangEnter = () => {
     if (langMenuTimer.current) clearTimeout(langMenuTimer.current);
@@ -156,8 +166,8 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
 
     if (mode === 'offline') {
        const backend = getBackend('offline');
-       const mockTeam = await backend.generateTeam(topic, langCode, [], selectedModel);
-       onStartMeeting(topic, mockTeam, 'offline', files, selectedModel, modSettings);
+       const mockTeam = await backend.generateTeam(topic, langCode, [], moderatorModel);
+       onStartMeeting(topic, mockTeam, 'offline', files, moderatorModel, modSettings);
        return;
     }
 
@@ -167,21 +177,24 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
     
     try {
         const backend = getBackend(mode);
-        // Step 1: Generate Team Structure (using default/base model)
-        const newAgents = await backend.generateTeam(topic, langCode, files, selectedModel);
+        // Step 1: Generate Team Structure 
+        // Use Moderator Model (High Quality) for the generation logic to get good personas
+        const newAgents = await backend.generateTeam(topic, langCode, files, moderatorModel);
         
         if (!newAgents || newAgents.length === 0) {
              throw new Error("No agents generated");
         }
 
         // Ensure models are attached and valid
+        // Assign PARTICIPANT MODEL to the agents to save cost
         const finalAgents = newAgents.map(a => ({ 
             ...a, 
             initialMessage: undefined, 
-            model: validateModel(a.model || selectedModel) 
+            model: validateModel(participantModel) 
         }));
         
-        onStartMeeting(topic, finalAgents, mode, files, selectedModel, modSettings);
+        // Pass moderatorModel as the default/moderator model
+        onStartMeeting(topic, finalAgents, mode, files, moderatorModel, modSettings);
 
     } catch (e: any) {
         console.error(e);
@@ -193,7 +206,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   };
 
   const startWithDefaults = () => {
-      onStartMeeting(topic, AGENTS, 'offline', files, selectedModel, modSettings);
+      onStartMeeting(topic, AGENTS, 'offline', files, moderatorModel, modSettings);
   };
 
   const goToCustomize = () => {
@@ -202,7 +215,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
      setStep('customize');
      const updatedAgents = agents.map(a => ({
          ...a,
-         model: validateModel(a.model || selectedModel)
+         model: validateModel(a.model || participantModel)
      }));
      setAgents(updatedAgents);
   };
@@ -216,11 +229,11 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
     setIsGenerating(true);
     try {
       const backend = getBackend(mode);
-      const newAgents = await backend.generateTeam(topic, langCode, files, selectedModel);
-      // Validate models of generated agents
+      const newAgents = await backend.generateTeam(topic, langCode, files, moderatorModel);
+      // Validate models of generated agents and assign participant model
       const validatedAgents = newAgents.map(a => ({
           ...a,
-          model: validateModel(a.model)
+          model: validateModel(participantModel)
       }));
       setAgents(validatedAgents);
     } catch (e: any) {
@@ -256,15 +269,15 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
           systemInstruction: "You are a helpful expert.",
           interest: "General",
           avatarColor: colors[agents.length % colors.length],
-          model: selectedModel
+          model: participantModel // Default to participant model
       };
       setAgents([...agents, newAgent]);
   };
 
-  const applyModelToAllAgents = () => {
+  const applyBulkModel = () => {
       const updatedAgents = agents.map(a => ({
           ...a,
-          model: selectedModel,
+          model: bulkModel,
           initialMessage: undefined 
       }));
       setAgents(updatedAgents);
@@ -289,11 +302,10 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   };
 
   const handleLoadConfig = (config: SavedConfig | TeamTemplate) => {
-      // Force update all agents in the template to use the currently selected global model
-      // OR sanitize their existing models
+      // Load agents, ensuring they have valid models (fallback to current participant model if missing/invalid)
       const agentsWithValidModels = config.agents.map(a => ({
           ...a,
-          model: validateModel(a.model) // Ensure no deprecated models are loaded
+          model: validateModel(a.model || participantModel) 
       }));
 
       setAgents(agentsWithValidModels);
@@ -353,10 +365,11 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       const finalAgents = agents.map(a => ({
           ...a,
           initialMessage: undefined,
-          model: validateModel(a.model || selectedModel)
+          model: validateModel(a.model || participantModel)
       }));
       
-      onStartMeeting(topic, finalAgents, mode, files, selectedModel, modSettings);
+      // Use moderatorModel as default for moderator
+      onStartMeeting(topic, finalAgents, mode, files, moderatorModel, modSettings);
   };
 
   const isValidTeamSize = agents.length >= 2 && agents.length <= 10;
@@ -443,7 +456,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                     </div>
                                 ))}
                                 <label className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg cursor-pointer transition-colors text-sm font-medium text-gray-700 dark:text-gray-300 border border-transparent">
-                                    <Paperclip size={16} /> Attach
+                                    <Paperclip size={16} /> {t.attach}
                                     <input type="file" multiple className="hidden" onChange={handleFileUpload} />
                                 </label>
                                 <button 
@@ -455,22 +468,49 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                             </div>
                         </div>
                         
-                        {/* Models & Settings Row */}
-                        <div className="flex gap-4 items-end">
-                            <div className={`flex-1 space-y-2 transition-opacity ${isOffline ? 'opacity-50' : 'opacity-100'}`}>
-                                <label className="block text-sm font-medium ml-1">{t.defaultModel}</label>
-                                <div className="relative">
-                                    <select 
-                                        value={selectedModel}
-                                        onChange={(e) => setSelectedModel(e.target.value)}
-                                        disabled={isOffline}
-                                        className="w-full appearance-none bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-4 py-3 pr-10 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed"
-                                    >
-                                        {MODEL_OPTIONS.map(opt => (
-                                            <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
-                                        ))}
-                                    </select>
-                                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={20} />
+                        {/* Models & Settings Row - Swapped Participants and Moderator */}
+                        <div className="flex flex-col sm:flex-row gap-4 items-end">
+                            <div className={`flex-1 flex gap-4 w-full transition-opacity ${isOffline ? 'opacity-50' : 'opacity-100'}`}>
+                                {/* Participants Model Select (Moved to Left) */}
+                                <div className="flex-1 space-y-2">
+                                    <label className="block text-sm font-medium ml-1 flex items-center gap-1">
+                                        <Users size={14} className="text-gray-600 dark:text-gray-400"/>
+                                        {t.participants}
+                                    </label>
+                                    <div className="relative">
+                                        <select 
+                                            value={participantModel}
+                                            onChange={(e) => setParticipantModel(e.target.value)}
+                                            disabled={isOffline}
+                                            className="w-full appearance-none bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-3 pr-8 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed"
+                                        >
+                                            {MODEL_OPTIONS.map(opt => (
+                                                <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                            ))}
+                                        </select>
+                                        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
+                                    </div>
+                                </div>
+
+                                {/* Moderator Model Select (Moved to Right) */}
+                                <div className="flex-1 space-y-2">
+                                    <label className="block text-sm font-medium ml-1 flex items-center gap-1">
+                                        <Bot size={14} className="text-indigo-600 dark:text-indigo-400"/>
+                                        {t.moderator}
+                                    </label>
+                                    <div className="relative">
+                                        <select 
+                                            value={moderatorModel}
+                                            onChange={(e) => setModeratorModel(e.target.value)}
+                                            disabled={isOffline}
+                                            className="w-full appearance-none bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-3 pr-8 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white cursor-pointer disabled:cursor-not-allowed"
+                                        >
+                                            {MODEL_OPTIONS.map(opt => (
+                                                <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                            ))}
+                                        </select>
+                                        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
+                                    </div>
                                 </div>
                             </div>
                             
@@ -482,37 +522,6 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                 <Settings2 size={18} />
                                 <span className="hidden sm:inline font-medium">{t.moderationOptions}</span>
                             </button>
-                        </div>
-
-                        <div className="flex flex-wrap items-center justify-end gap-6 mt-4">
-                           {/* OFFLINE TOGGLE */}
-                           <div className="relative group">
-                               <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 cursor-pointer transition-colors select-none z-10">
-                                   <WifiOff size={16} />
-                                   <span className="font-medium">{t.modeOffline}</span>
-                                   <div className={`relative w-9 h-5 rounded-full p-1 transition-colors duration-200 ${mode === 'offline' ? 'bg-gray-600' : 'bg-gray-200 dark:bg-gray-700'}`}>
-                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-200 ${mode === 'offline' ? 'translate-x-4' : 'translate-x-0'}`} />
-                                   </div>
-                                   <input 
-                                        type="checkbox" 
-                                        checked={mode === 'offline'} 
-                                        onChange={(e) => setMode(e.target.checked ? 'offline' : 'multi-agent')} 
-                                        className="hidden" 
-                                   />
-                               </label>
-                           </div>
-
-                           {/* DEBUG TOGGLE */}
-                           <div className="relative group">
-                               <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 cursor-pointer transition-colors select-none z-10">
-                                   <Bug size={16} />
-                                   <span className="font-medium">{t.debugMode}</span>
-                                   <div className={`relative w-9 h-5 rounded-full p-1 transition-colors duration-200 ${debugMode ? 'bg-indigo-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
-                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-200 ${debugMode ? 'translate-x-4' : 'translate-x-0'}`} />
-                                   </div>
-                                   <input type="checkbox" checked={debugMode} onChange={(e) => setDebugMode(e.target.checked)} className="hidden" />
-                               </label>
-                           </div>
                         </div>
                     </div>
 
@@ -582,6 +591,44 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                             )}
                             </div>
                     </div>
+
+                    {/* Moved Toggles to Bottom - JUSTIFY END */}
+                    <div className="flex flex-wrap items-center justify-end gap-6 pt-8 pb-4 border-t border-gray-200 dark:border-gray-800 opacity-80 hover:opacity-100 transition-opacity">
+                           {/* OFFLINE TOGGLE */}
+                           <div className="relative group">
+                               <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 cursor-pointer transition-colors select-none z-10">
+                                   <WifiOff size={16} />
+                                   <span className="font-medium">{t.modeOffline}</span>
+                                   <div className={`relative w-9 h-5 rounded-full p-1 transition-colors duration-200 ${mode === 'offline' ? 'bg-gray-600' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-200 ${mode === 'offline' ? 'translate-x-4' : 'translate-x-0'}`} />
+                                   </div>
+                                   <input 
+                                        type="checkbox" 
+                                        checked={mode === 'offline'} 
+                                        onChange={(e) => setMode(e.target.checked ? 'offline' : 'multi-agent')} 
+                                        className="hidden" 
+                                   />
+                               </label>
+                               <div className="absolute bottom-full mb-2 hidden group-hover:block w-48 p-2 bg-black/80 text-white text-xs rounded z-50 text-center backdrop-blur-sm shadow-xl animate-in fade-in slide-in-from-bottom-2">
+                                  {t.offlineTooltip}
+                               </div>
+                           </div>
+
+                           {/* DEBUG TOGGLE */}
+                           <div className="relative group">
+                               <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 cursor-pointer transition-colors select-none z-10">
+                                   <Bug size={16} />
+                                   <span className="font-medium">{t.debugMode}</span>
+                                   <div className={`relative w-9 h-5 rounded-full p-1 transition-colors duration-200 ${debugMode ? 'bg-indigo-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
+                                       <div className={`w-3 h-3 bg-white rounded-full shadow-sm transition-transform duration-200 ${debugMode ? 'translate-x-4' : 'translate-x-0'}`} />
+                                   </div>
+                                   <input type="checkbox" checked={debugMode} onChange={(e) => setDebugMode(e.target.checked)} className="hidden" />
+                               </label>
+                               <div className="absolute bottom-full mb-2 hidden group-hover:block w-48 p-2 bg-black/80 text-white text-xs rounded z-50 text-center backdrop-blur-sm shadow-xl animate-in fade-in slide-in-from-bottom-2">
+                                  {t.debugModeDesc}
+                               </div>
+                           </div>
+                    </div>
                 </div>
             )}
             
@@ -629,25 +676,51 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                            </button>
                        </div>
                        
-                       {/* Global Model Apply */}
-                        <div className="flex gap-2 items-center justify-end">
-                            <span className="text-sm text-gray-500">{t.modelLabel}:</span>
-                            <select 
-                                value={selectedModel}
-                                onChange={(e) => setSelectedModel(e.target.value)}
-                                disabled={isOffline}
-                                className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-1 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white"
-                            >
-                                {MODEL_OPTIONS.map(opt => (
-                                    <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
-                                ))}
-                            </select>
-                            <button 
-                              onClick={applyModelToAllAgents}
-                              className="text-xs bg-gray-100 dark:bg-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center gap-1"
-                            >
-                                <Copy size={12}/> {t.applyToAll}
-                            </button>
+                       {/* SEPARATED MODEL CONTROLS */}
+                        <div className="bg-gray-100 dark:bg-gray-800/50 p-3 rounded-xl flex flex-col sm:flex-row gap-4 justify-between items-center border border-gray-200 dark:border-gray-700">
+                            {/* Moderator Model */}
+                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                                <span className="text-sm font-bold text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                                    <Bot size={16} className="text-indigo-600 dark:text-indigo-400"/>
+                                    {t.moderator}:
+                                </span>
+                                <select 
+                                    value={moderatorModel}
+                                    onChange={(e) => setModeratorModel(e.target.value)}
+                                    disabled={isOffline}
+                                    className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white flex-1 sm:flex-none cursor-pointer"
+                                >
+                                    {MODEL_OPTIONS.map(opt => (
+                                        <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="hidden sm:block h-6 w-px bg-gray-300 dark:bg-gray-700"></div>
+
+                            {/* Bulk Apply */}
+                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                                <span className="text-sm font-bold text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                                    <Users size={16} className="text-gray-500 dark:text-gray-400"/>
+                                    {t.participants}:
+                                </span>
+                                <select 
+                                    value={bulkModel}
+                                    onChange={(e) => setBulkModel(e.target.value)}
+                                    disabled={isOffline}
+                                    className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg px-3 py-1.5 text-sm shadow-sm outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white flex-1 sm:flex-none cursor-pointer"
+                                >
+                                    {MODEL_OPTIONS.map(opt => (
+                                        <option key={opt.id} value={opt.id}>{t.modelNames?.[opt.id] || opt.id}</option>
+                                    ))}
+                                </select>
+                                <button 
+                                    onClick={applyBulkModel}
+                                    className="text-xs font-bold bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-3 py-2 rounded-lg hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors flex items-center gap-1 whitespace-nowrap"
+                                >
+                                    <Copy size={14}/> {t.applyToAll}
+                                </button>
+                            </div>
                         </div>
 
                        {/* Agent List */}
@@ -682,7 +755,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                                 <div>
                                                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Cpu size={12}/> {t.modelLabel}</label>
                                                    <select 
-                                                        value={agent.model || selectedModel}
+                                                        value={agent.model || participantModel}
                                                         onChange={(e) => handleAgentChange(i, 'model', e.target.value)}
                                                         disabled={isOffline}
                                                         className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
