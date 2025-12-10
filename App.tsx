@@ -61,7 +61,7 @@ const App: React.FC = () => {
   // Hook handles all meeting logic
   const {
     agents, messages, whiteboardData,
-    isActive, isPaused, setIsPaused, isWaitingForUser, error, currentSpeakerId, handRaisedQueue, agentActiveModels, debugPrompt,
+    isActive, isPaused, setIsPaused, isWaitingForUser, error, currentSpeakerId, handRaisedQueue, agentActiveModels, moderatorModel, debugPrompt,
     startMeeting, stopMeeting, togglePause, addMessage, addFiles, generateMinutes
   } = useMeeting(backend, langCode, debugMode, startParams?.settings || DEFAULT_MODERATION_SETTINGS);
 
@@ -225,6 +225,9 @@ const App: React.FC = () => {
   const rightAgents = agents.filter((_, i) => i % 2 !== 0);
   const isModeratorSpeaking = currentSpeakerId === 'ai-moderator';
 
+  // Calculate Moderator Downgrade Status
+  const isModeratorDowngraded = startParams && moderatorModel && moderatorModel !== startParams.model;
+
   // Debug Prompt Display Helper
   const DebugPromptBox = ({ prompt }: { prompt: string }) => (
       <div className="text-[10px] font-mono text-left bg-black/5 dark:bg-black/20 p-2 rounded border border-gray-200 dark:border-gray-600 max-h-32 overflow-y-auto whitespace-pre-wrap">
@@ -315,11 +318,21 @@ const App: React.FC = () => {
 
                   {/* TOP: Moderator */}
                   <div className={`absolute top-16 left-1/2 -translate-x-1/2 flex flex-col items-center transition-all duration-500 ${isModeratorSpeaking ? 'scale-110 z-50' : 'opacity-70 scale-90 z-20'}`}>
-                      <div className={`relative w-16 h-16 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all duration-300 ${isModeratorSpeaking ? 'border-4 border-indigo-500' : 'border-2 border-indigo-200 dark:border-indigo-800'}`}>
-                          {/* Thinking Spinner for Moderator */}
-                          {isModeratorSpeaking && <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
-                          <Mic2 size={32} className="text-indigo-600 dark:text-indigo-200" />
+                      <div className="relative">
+                        <div className={`relative w-16 h-16 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all duration-300 ${isModeratorSpeaking ? 'border-4 border-indigo-500' : 'border-2 border-indigo-200 dark:border-indigo-800'}`}>
+                            {/* Thinking Spinner for Moderator */}
+                            {isModeratorSpeaking && <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
+                            <Mic2 size={32} className="text-indigo-600 dark:text-indigo-200" />
+                        </div>
+                        {/* Moderator Downgrade Indicator */}
+                        {isModeratorDowngraded && (
+                           <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-orange-100 dark:bg-orange-900/80 text-orange-600 dark:text-orange-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-orange-200 dark:border-orange-700 whitespace-nowrap shadow-sm flex items-center gap-1 z-30" title={t.downgradeAlert}>
+                               <ShieldAlert size={8} />
+                               {getModelLabel(moderatorModel)}
+                           </div>
+                        )}
                       </div>
+                      
                       <div className="mt-2 bg-white/80 dark:bg-black/60 backdrop-blur px-3 py-1 rounded-full text-xs font-bold text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 shadow-sm">
                           {t.moderator}
                       </div>

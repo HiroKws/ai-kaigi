@@ -1,5 +1,6 @@
 
 
+
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { Agent, Message, WhiteboardData, MeetingBackend, MeetingMode, ModeratorResponse, Attachment, UsageStats, GenerationResult, NegotiationResult, HandRaiseSignal, ModerationSettings } from "../types";
 import { AGENTS, DEFAULT_MODEL, MODEL_FALLBACK_CHAIN, DEFAULT_MODERATION_SETTINGS } from "../constants";
@@ -284,8 +285,8 @@ export class OfflineBackend implements MeetingBackend {
     };
   }
   
-  async checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]> {
-      if (onPrompt) onPrompt(`(Offline Mock Prompt) Checking reactions...`);
+  async checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, topic: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]> {
+      if (onPrompt) onPrompt(`(Offline Mock Prompt) Checking reactions... Topic: ${topic}`);
       await wait(500);
       return Math.random() > 0.7 ? [{ agentId: agents[0].id, type: 'OBJECTION', reason: 'Disagreement' }] : [];
   }
@@ -524,14 +525,14 @@ export class GeminiBackend implements MeetingBackend {
       // Build Dynamic Instructions based on Phase & Settings
       let phaseInstruction = "";
       if (meetingStage === 'divergence') {
-          phaseInstruction = "PHASE: DIVERGENCE (OPEN). Encourage wild ideas and quantity. Do not criticize yet. Allow off-topic if creative.";
+          phaseInstruction = "PHASE: DIVERGENCE (OPEN). Encourage BROAD ideas, but enforce GOAL RELEVANCE. If ideas are abstract, ask 'How does this solve the [TOPIC]?'.";
       } else if (meetingStage === 'groan') {
-          phaseInstruction = "PHASE: GROAN ZONE (STRUGGLE). Opinions are conflicting. Your role is to Structure, Summarize, and clarify the conflict. Do not rush to solution.";
+          phaseInstruction = "PHASE: GROAN ZONE (STRUGGLE). Identify conflicts and gaps. Do NOT just summarize; point out 'This idea lacks evidence' or 'These two views contradict'.";
           if (settings.sixThinkingHats) {
               phaseInstruction += " [OPTION ENABLED: SIX HATS] If stuck, ask everyone to switch to 'Black Hat' (Risks) or 'Green Hat' (Alternatives) explicitly.";
           }
       } else if (meetingStage === 'convergence') {
-          phaseInstruction = "PHASE: CONVERGENCE (CLOSE). Push for decision and agreement. Ignore minor objections.";
+          phaseInstruction = "PHASE: CONVERGENCE (CLOSE). Aggressively filter ideas. Discard abstract ones. Push for a final decision on [TOPIC].";
           if (settings.fistToFive) {
               phaseInstruction += " [OPTION ENABLED: FIST-TO-FIVE] You must explicitly check for consensus. If unsure, ask 'Let's do a Fist-to-Five check'. Pick agents who seem to disagree (score < 3).";
           }
@@ -539,7 +540,7 @@ export class GeminiBackend implements MeetingBackend {
 
       let specializedTechniques = "";
       if (settings.parkingLot) {
-          specializedTechniques += "- PARKING LOT: If an agent goes too far off-topic, acknowledge them but say 'I'll put that in the Parking Lot for later' and return to the topic.\n";
+          specializedTechniques += "- PARKING LOT: If an agent goes off-topic (e.g. general philosophy instead of specific solution), immediately say 'I'll put that in the Parking Lot' and return to [TOPIC].\n";
       }
       if (settings.reframing) {
           specializedTechniques += "- REFRAMING: If an agent is negative/aggressive, rephrase their attack into a 'Question' (e.g., 'It's impossible' -> 'How can we make it possible?'). Use the 'Sandwich' method (Praise -> Correction -> Praise).\n";
@@ -547,10 +548,11 @@ export class GeminiBackend implements MeetingBackend {
 
       const prompt = `
         [META-ROLE]
-        You are the skilled Moderator of a brainstorming session using the 'Diamond of Participation' framework.
+        You are the "Goal Guardian" and Moderator.
+        YOUR SUPREME MISSION: Ensure the team achieves the Goal: "${topic}".
         
         [CURRENT CONTEXT]
-        Topic: "${topic}"
+        Topic/Goal: "${topic}"
         Language: "${lang}"
         Current Phase: ${meetingStage.toUpperCase()}
         
@@ -560,22 +562,25 @@ export class GeminiBackend implements MeetingBackend {
         [ENABLED TECHNIQUES]
         ${specializedTechniques}
         
-        [PARTICIPANTS]
-        ${agentList}
-        
         [TRANSCRIPT (LAST 15 TURNS)]
         ${transcript}
         
         [HAND RAISERS (Active Signals)]
         ${handRaiserContext}
         
-        [USER COMMAND PRIORITY (CRITICAL)]
-        If user gives a DIRECT INSTRUCTION (e.g. "Vote now", "Ask X"), FOLLOW IT immediately.
+        [CRITICAL INTERVENTION LOGIC - EXECUTE THIS FIRST]
+        1. **Check for Abstractness**: Did the last speaker use vague terms (e.g. "paradigm shift", "essence", "future") WITHOUT a concrete example?
+           - If YES: Intervene. "That is too abstract. Give me a concrete example regarding [${topic}]."
+        2. **Check for Drift**: Is the discussion drifting away from solving "${topic}"?
+           - If YES: Intervene immediately. "Let's return to the goal: [${topic}]."
         
         [SELECTION LOGIC]
-        1. **User Query**: If user input needed, set "nextSpeakerId": "user".
-        2. **Convergence**: If Phase is Convergence, prioritize 'SYNTHESIS' or 'SOLUTION' signals.
-        3. **Groan Zone**: If Phase is Groan, prioritize 'OBJECTION' to clear doubts.
+        1. **User Command**: If user gives a DIRECT INSTRUCTION (e.g. "Vote now", "Ask X"), FOLLOW IT immediately.
+        2. **Correction**: If steering is needed (Drift/Abstractness), pick the agent most likely to align with the goal, or pick 'user' to ask for guidance.
+        3. **Phase Logic**:
+           - Convergence: Prioritize 'SYNTHESIS' or 'SOLUTION' signals.
+           - Groan Zone: Prioritize 'OBJECTION' to clear doubts.
+           - Divergence: Encourage new voices ONLY IF they are relevant to [TOPIC].
         4. **Silence**: Pick agent who hasn't spoken recently.
         
         [OUTPUT]
@@ -611,10 +616,14 @@ export class GeminiBackend implements MeetingBackend {
 
       const prompt = `
         [META-INSTRUCTION]
-        RESET PERSPECTIVE.
-        LOAD CHARACTER: ${agent.name}, ${agent.role}
-        TRAITS: ${agent.systemInstruction}
-        INTEREST: ${agent.interest || 'None'}
+        You are participating in a meeting.
+        GOAL: "${topic}"
+        
+        [CHARACTER PROFILE]
+        Name: ${agent.name}
+        Role: ${agent.role}
+        Traits: ${agent.systemInstruction}
+        Core Interest: ${agent.interest || 'None'}
         
         [SCENE CONTEXT]
         Meeting Topic: "${topic}"
@@ -623,9 +632,15 @@ export class GeminiBackend implements MeetingBackend {
         [TRANSCRIPT (LAST 15 TURNS)]
         ${transcript}
         
+        [MANDATORY BEHAVIOR]
+        1. **Goal Orientation**: Your specific opinions are important, but they MUST serve the Goal ("${topic}").
+        2. **NO ABSTRACT PHILOSOPHY**: Do not just state general theories. You MUST propose a specific action, solution, or risk relevant to "${topic}".
+           - Bad: "We need a paradigm shift."
+           - Good: "To achieve [TOPIC], we must change X to Y immediately."
+        3. **Stay in Character**: Use your persona's tone, but apply it constructively.
+        
         [ACTION]
-        As ${agent.name}, respond to the discussion. Stay 100% in character.
-        If the last message touched on your 'INTEREST', react to it directly.
+        As ${agent.name}, generate a response that moves the discussion towards the Goal.
         
         [LENGTH RULE]
         - General: Be CONCISE (1-2 sentences).
@@ -638,7 +653,7 @@ export class GeminiBackend implements MeetingBackend {
     });
   }
 
-  async checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]> {
+  async checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, topic: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]> {
       return runWithRetry(async () => {
           if (!lastMessage || agents.length === 0) return [];
           
@@ -653,6 +668,7 @@ export class GeminiBackend implements MeetingBackend {
           const prompt = `
             [TASK]
             Analyze the "Last Message" and determine if it triggers the specific "Interests" of any listeners.
+            Meeting Goal: "${topic}" 
             
             [CRITERIA FOR RAISING HAND]
             1. **Direct Mention**: The listener was explicitly named.

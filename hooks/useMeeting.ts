@@ -1,5 +1,4 @@
 
-
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Agent, Message, WhiteboardData, MeetingBackend, Attachment, UsageStats, HandRaiseSignal, ModerationSettings } from '../types';
 import { INITIAL_WHITEBOARD_STATE, DEFAULT_MODEL, MODEL_SHORT_NAMES, TRANSLATIONS, DEFAULT_MODERATION_SETTINGS } from '../constants';
@@ -32,6 +31,8 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
   
   // Track which model was actually used for each agent's last turn
   const [agentActiveModels, setAgentActiveModels] = useState<Record<string, string>>({});
+  // Track specifically the moderator's active model (persistent fallback)
+  const [moderatorModel, setModeratorModel] = useState<string>(DEFAULT_MODEL);
   
   // Track current debug prompt being used
   const [debugPrompt, setDebugPrompt] = useState<string | null>(null);
@@ -63,16 +64,16 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
 
   // --- STABLE STATE REFERENCES ---
   const stateRef = useRef({ 
-      messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel,
+      messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel,
       isActive, isPaused, debugMode, meetingStage, settings
   });
   
   useEffect(() => {
     stateRef.current = { 
-        messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel,
+        messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel,
         isActive, isPaused, debugMode, meetingStage, settings
     };
-  }, [messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, isActive, isPaused, debugMode, meetingStage, settings]);
+  }, [messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel, isActive, isPaused, debugMode, meetingStage, settings]);
 
 
   // --- ACTIONS ---
@@ -93,6 +94,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
     setAgents(team);
     setFiles(initialFiles);
     setDefaultModel(model);
+    setModeratorModel(model); // Reset moderator model to default at start
     setMessages([{ id: 'init', agentId: 'user', text: `Goal/Topic: ${newTopic}`, timestamp: Date.now() }]);
     setWhiteboardData(INITIAL_WHITEBOARD_STATE);
     setIsActive(true);
@@ -135,8 +137,8 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
   }, []);
 
   const generateMinutes = useCallback(async () => {
-     return backend.generateMinutes(topic, messages, agents, langCode, defaultModel);
-  }, [backend, topic, messages, agents, langCode, defaultModel]);
+     return backend.generateMinutes(topic, messages, agents, langCode, moderatorModel);
+  }, [backend, topic, messages, agents, langCode, moderatorModel]);
 
   // --- MEETING LOOP ---
 
@@ -150,7 +152,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
     }
     
     // Access latest data from Ref
-    const { messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, debugMode, meetingStage, settings } = state;
+    const { messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel, debugMode, meetingStage, settings } = state;
     
     setError(null);
 
@@ -172,7 +174,11 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
 
           const moderatorAgent = agents.find(a => a.role.toLowerCase().includes('moderator') || a.role.includes('司会')) || agents[0];
           
-          const response = await backend.negotiateGoal(topic, messages, moderatorAgent, langCode, defaultModel, settings, handlePromptUpdate);
+          const response = await backend.negotiateGoal(topic, messages, moderatorAgent, langCode, moderatorModel, settings, handlePromptUpdate);
+          
+          // Update moderator persistent model
+          setModeratorModel(response.usedModel);
+          
           setDebugPrompt(null); // Clear prompt after generation
           syncStats();
 
@@ -276,12 +282,15 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
             agents, 
             langCode, 
             files, 
-            defaultModel, 
+            moderatorModel, // Use persistent model 
             handRaiseSignalsRef.current,
             settings,    // Pass advanced settings
             nextStage,   // Pass current stage
             handlePromptUpdate
         );
+        
+        // Update persistent model if changed
+        setModeratorModel(response.usedModel);
         
         setDebugPrompt(null);
         const { nextSpeakerId: nextId, moderationText, usedModel } = response;
@@ -347,7 +356,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
           const lastMsg = { id: 'temp', agentId: agent.id, text: response.text, timestamp: Date.now() };
           setStatus('Checking for reactions...');
           try {
-              const signals = await backend.checkForHandRaises(lastMsg, agents, langCode, handlePromptUpdate);
+              const signals = await backend.checkForHandRaises(lastMsg, agents, langCode, topic, handlePromptUpdate);
               setDebugPrompt(null);
               syncStats();
               
@@ -445,6 +454,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
     nextSpeakerId,
     handRaisedQueue,
     agentActiveModels,
+    moderatorModel, // EXPORTED
     debugPrompt,
     startMeeting,
     stopMeeting,

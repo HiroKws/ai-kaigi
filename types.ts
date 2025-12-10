@@ -1,4 +1,5 @@
 
+
 export interface Attachment {
   name: string;
   mimeType: string;
@@ -129,7 +130,7 @@ export interface MeetingBackend {
   generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult>;
   
   // New method to check reactions - Returns structured signals now
-  checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]>;
+  checkForHandRaises(lastMessage: Message, agents: Agent[], lang: string, topic: string, onPrompt?: (prompt: string) => void): Promise<HandRaiseSignal[]>;
   
   // New method to generate meeting minutes
   generateMinutes(topic: string, history: Message[], agents: Agent[], lang: string, model: string): Promise<string>;
