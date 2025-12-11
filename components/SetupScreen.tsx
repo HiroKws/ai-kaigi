@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Agent, MeetingMode, SavedConfig, Attachment, TeamTemplate, ModerationSettings } from '../types';
 import { getMeetingBackend } from '../services/geminiService';
-import { Users, Wand2, Save, Download, Trash2, Play, AlertCircle, ChevronLeft, Globe, ArrowRight, Zap, Bot, WifiOff, FileText, X, Plus, Paperclip, Upload, ChevronDown, Shield, Copy, Heart, Cpu, AlertTriangle, Bug, StickyNote, Settings2, Diamond, Hand, MessageSquare, ListFilter, MessageCircle, Check } from 'lucide-react';
+import { Users, Wand2, Save, Download, Trash2, Play, AlertCircle, ChevronLeft, Globe, ArrowRight, Zap, Bot, WifiOff, FileText, X, Plus, Paperclip, Upload, ChevronDown, Shield, Copy, Heart, Cpu, AlertTriangle, Bug, StickyNote, Settings2, Diamond, Hand, MessageSquare, ListFilter, MessageCircle, Check, Clipboard, Sparkles } from 'lucide-react';
 import { AGENTS, LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, DEFAULT_MODERATION_SETTINGS } from '../constants';
 import { PRESET_TEAMS } from '../teams';
 import { ErrorBanner } from './ErrorBanner';
@@ -19,6 +19,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   const [step, setStep] = useState<'initial' | 'customize'>('initial');
   
   const [topic, setTopic] = useState('');
+  const [teamName, setTeamName] = useState(''); 
   const [agents, setAgents] = useState<Agent[]>(AGENTS);
   const [files, setFiles] = useState<Attachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -26,6 +27,10 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   const [showFallback, setShowFallback] = useState(false);
   const [mode, setMode] = useState<MeetingMode>('multi-agent');
   
+  // Track if the user has explicitly loaded a configuration (preset, import, or auto-gen)
+  // If false, entering "Customize" will show empty slots instead of default agents.
+  const [hasLoadedConfig, setHasLoadedConfig] = useState(false);
+
   // Model Selection - Split into Moderator and Participants
   const [moderatorModel, setModeratorModel] = useState<string>('gemini-3-pro-preview');
   const [participantModel, setParticipantModel] = useState<string>('gemini-2.5-flash-lite');
@@ -37,6 +42,15 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveName, setSaveName] = useState('');
+  
+  // Export Modal State
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportName, setExportName] = useState('');
+
+  // JSON Import Modal State
+  const [showJsonImportModal, setShowJsonImportModal] = useState(false);
+  const [jsonImportText, setJsonImportText] = useState('');
+
   const [isPresetDropdownOpen, setIsPresetDropdownOpen] = useState(false);
 
   // Text Note Modal State
@@ -213,11 +227,30 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
      setErrorMsg(null);
      setShowFallback(false);
      setStep('customize');
-     const updatedAgents = agents.map(a => ({
-         ...a,
-         model: validateModel(a.model || participantModel)
-     }));
-     setAgents(updatedAgents);
+
+     // If no config has been loaded (user typed topic and clicked customize), show 3 empty slots
+     if (!hasLoadedConfig) {
+         const emptyAgents: Agent[] = Array.from({ length: 3 }).map((_, i) => ({
+             id: `custom-empty-${Date.now()}-${i}`,
+             name: "",
+             role: "",
+             systemInstruction: "",
+             interest: "",
+             avatarColor: 'bg-gray-400',
+             model: participantModel
+         }));
+         setAgents(emptyAgents);
+         // Mark as loaded so we don't reset again if they come back from a later step (conceptually)
+         // or if they toggle back and forth without saving
+         setHasLoadedConfig(true); 
+     } else {
+         // Existing Logic: Just ensure models are valid
+         const updatedAgents = agents.map(a => ({
+             ...a,
+             model: validateModel(a.model || participantModel)
+         }));
+         setAgents(updatedAgents);
+     }
   };
 
   const handleAutoGenerateInCustomize = async () => {
@@ -236,6 +269,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
           model: validateModel(participantModel)
       }));
       setAgents(validatedAgents);
+      setHasLoadedConfig(true); // User has explicitly generated content
     } catch (e: any) {
       setErrorMsg(e.message);
     } finally {
@@ -261,6 +295,8 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   };
 
   const handleAddAgent = () => {
+      if (agents.length >= 7) return; // Hard limit check
+
       const colors = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500'];
       const newAgent: Agent = {
           id: `custom-${Date.now()}`,
@@ -283,9 +319,17 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       setAgents(updatedAgents);
   };
 
+  const handleOpenSaveModal = () => {
+      setSaveName(teamName); // Default to current team name
+      setShowSaveModal(true);
+  };
+
   const handleSaveConfig = () => {
     if (!saveName.trim()) return;
     
+    // Update team name if saving with a new name
+    setTeamName(saveName);
+
     const newConfig: SavedConfig = {
         id: Date.now().toString(),
         name: saveName,
@@ -309,6 +353,8 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       }));
 
       setAgents(agentsWithValidModels);
+      setTeamName(config.name); // Set Team Name from config
+      setHasLoadedConfig(true); // User has explicitly loaded
       setStep('customize');
       setIsPresetDropdownOpen(false);
   };
@@ -322,18 +368,42 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
   };
 
   const handleExportConfig = () => {
-    const config = { topic, agents };
+    // Open Export Modal instead of window.prompt to avoid blocking issues
+    const defaultName = teamName.trim() || `team-${Date.now()}`;
+    setExportName(defaultName);
+    setShowExportModal(true);
+  };
+
+  const performExport = () => {
+    if (!exportName.trim()) return;
+    const fileName = exportName.trim();
+
+    // Export ONLY agents, no topic or teamName in JSON as requested
+    const config = { agents };
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `config-${Date.now()}.json`;
+    // Ensure .json extension
+    a.download = fileName.endsWith('.json') ? fileName : `${fileName}.json`;
+    
+    // FIX: Append to body to ensure click works in all browsers
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    setShowExportModal(false);
   };
 
   const handleImportConfig = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+
+      // Use filename (without extension) as Team Name
+      const nameWithoutExt = file.name.replace(/\.json$/i, '');
+      setTeamName(nameWithoutExt);
+
       const reader = new FileReader();
       reader.onload = (ev) => {
           try {
@@ -345,10 +415,9 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                       model: validateModel(a.model)
                   }));
                   setAgents(importedAgents);
+                  setHasLoadedConfig(true); // User has explicitly imported
               }
-              if (json.topic) {
-                  setTopic(json.topic);
-              }
+              
               setStep('customize');
           } catch (error) {
               alert("Invalid config file");
@@ -357,6 +426,39 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       reader.readAsText(file);
       // Reset input
       e.target.value = '';
+  };
+
+  const handlePasteImport = () => {
+      try {
+          const json = JSON.parse(jsonImportText);
+          let loadedAgents: Agent[] = [];
+
+          if (json.agents && Array.isArray(json.agents)) {
+              loadedAgents = json.agents;
+          } else if (Array.isArray(json)) {
+              loadedAgents = json;
+          } else {
+              alert("Invalid JSON format. Expected object with 'agents' array or an array of agents.");
+              return;
+          }
+
+          if (loadedAgents.length > 0) {
+              const importedAgents = loadedAgents.map((a: Agent) => ({
+                  ...a,
+                  // Ensure model validity but keep other fields as is
+                  model: validateModel(a.model)
+              }));
+              setAgents(importedAgents);
+              setHasLoadedConfig(true);
+              setStep('customize'); // Ensure navigation to customize screen
+              setShowJsonImportModal(false);
+              setJsonImportText('');
+          } else {
+              alert("No agents found in JSON.");
+          }
+      } catch (e) {
+          alert("Invalid JSON syntax.");
+      }
   };
   
   const handleStartCustomMeeting = async () => {
@@ -372,7 +474,8 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
       onStartMeeting(topic, finalAgents, mode, files, moderatorModel, modSettings);
   };
 
-  const isValidTeamSize = agents.length >= 2 && agents.length <= 10;
+  // Min 3, Max 7
+  const isValidTeamSize = agents.length >= 3 && agents.length <= 7;
 
   return (
     <div className="w-full h-full bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex flex-col font-sans transition-colors duration-300 relative">
@@ -418,7 +521,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
         onClose={() => setErrorMsg(null)}
         actionButton={showFallback && (
             <button onClick={startWithDefaults} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex justify-center items-center gap-2 hover:bg-green-500 shadow-md">
-                <span>Use Offline Mode</span> <ArrowRight size={16} />
+                <span>{t.useOfflineMode}</span> <ArrowRight size={16} />
             </button>
         )}
       />
@@ -440,7 +543,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                               type="text"
                               value={topic}
                               onChange={(e) => setTopic(e.target.value)}
-                              placeholder={t.topicPlaceholder}
+                              placeholder={t.topicPlaceholderShort}
                               className="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl px-6 py-5 text-xl shadow-sm outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
@@ -561,7 +664,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                                 <div key={config.id} className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
                                                     <button onClick={() => handleLoadConfig(config)} className="flex-grow text-left p-3 font-medium text-sm flex flex-col outline-none focus:bg-gray-100 dark:focus:bg-gray-700">
                                                         <span className="text-gray-900 dark:text-gray-100">{config.name}</span>
-                                                        <span className="text-xs text-gray-500">{config.agents.length} agents</span>
+                                                        <span className="text-xs text-gray-500">{config.agents.length} {t.agentsCount}</span>
                                                     </button>
                                                     <button onClick={(e) => handleDeleteConfig(e, config.id)} className="flex-shrink-0 p-3 mr-1 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors cursor-pointer" title={t.deletePreset} type="button">
                                                         <Trash2 size={18} />
@@ -582,7 +685,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                                 <span className="text-indigo-700 dark:text-indigo-300 group-hover:text-indigo-600 font-bold">
                                                     {t.presetTeams?.[template.id] || template.name}
                                                 </span>
-                                                <span className="text-xs text-gray-500 mt-0.5">{template.agents.length} Agents: {template.agents.map(a => a.name.split(' ')[0]).join(', ')}</span>
+                                                <span className="text-xs text-gray-500 mt-0.5">{template.agents.length} {t.agentsLabel} {template.agents.map(a => a.name.split(' ')[0]).join(', ')}</span>
                                             </button>
                                         </div>
                                     ))}
@@ -629,6 +732,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                </div>
                            </div>
                     </div>
+
+                    {/* Gem Promo Link */}
+                    <div className="flex justify-center pb-2">
+                         <a href="https://gemini.google.com/gem/17q1KYZsu1h-7fAwRGLbnPGwrS7MPRgZo?usp=sharing" target="_blank" rel="noopener noreferrer" className="text-xs text-gray-400 hover:text-indigo-500 dark:text-gray-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1.5">
+                            <Sparkles size={12} />
+                            {t.gemPromo}
+                         </a>
+                    </div>
                 </div>
             )}
             
@@ -640,14 +751,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                           <ChevronLeft size={20} /> <span className="font-medium">{t.back}</span>
                       </button>
                       <div className="flex gap-2">
-                          <button onClick={() => setIsModSettingsOpen(true)} className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors" title={t.moderationOptions}>
-                             <Settings2 size={18} />
+                          <button onClick={() => setShowJsonImportModal(true)} className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors" title="Paste JSON Config">
+                             <Clipboard size={18} />
                           </button>
                           <label className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors cursor-pointer" title={t.import}>
                              <Upload size={18} />
                              <input type="file" accept=".json" onChange={handleImportConfig} className="hidden" />
                           </label>
-                          <button onClick={() => setShowSaveModal(true)} className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors" title={t.save}>
+                          <button onClick={handleOpenSaveModal} className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors" title={t.save}>
                              <Save size={18} /> <span className="hidden sm:inline">{t.save}</span>
                           </button>
                           <button onClick={handleExportConfig} className="p-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg transition-colors" title={t.export}>
@@ -657,23 +768,17 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                    </div>
                    
                    {/* Scrollable Content */}
-                   <div className="flex-1 overflow-y-auto p-6 space-y-8">
-                       {/* Topic Input in Customize (ReadOnly-ish or Editable) */}
-                       <div className="flex gap-2">
-                           <input 
-                              value={topic}
-                              onChange={(e) => setTopic(e.target.value)}
-                              className="flex-1 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2 text-lg font-medium outline-none focus:ring-2 focus:ring-indigo-500"
-                              placeholder="Topic..."
-                           />
-                           <button 
-                             onClick={handleAutoGenerateInCustomize} 
-                             disabled={isGenerating} 
-                             className="px-4 py-2 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 rounded-xl font-medium text-sm flex items-center gap-2 hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors"
-                           >
-                              {isGenerating ? <div className="animate-spin"><Wand2 size={16}/></div> : <Wand2 size={16}/>}
-                              {t.generateAgents}
-                           </button>
+                   <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                       
+                       {/* TEAM NAME INPUT (Topic Removed) */}
+                       <div className="space-y-1">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider ml-1">{t.teamNamePlaceholder}</label>
+                            <input
+                                value={teamName}
+                                onChange={(e) => setTeamName(e.target.value)}
+                                className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2 text-lg font-bold outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900 dark:text-white"
+                                placeholder="Team Name..."
+                            />
                        </div>
                        
                        {/* SEPARATED MODEL CONTROLS */}
@@ -770,7 +875,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                                     <input 
                                                       value={agent.interest || ''}
                                                       onChange={(e) => handleAgentChange(i, 'interest', e.target.value)}
-                                                      placeholder="e.g. Cost efficiency, Safety..."
+                                                      placeholder={t.interestPlaceholder}
                                                       className="w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                                                    />
                                                 </div>
@@ -792,7 +897,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                                    </div>
                                </div>
                            ))}
-                           <button onClick={handleAddAgent} className="flex items-center justify-center gap-2 py-4 border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl text-gray-500 hover:text-indigo-500 hover:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/10 transition-all font-bold">
+                           <button onClick={handleAddAgent} disabled={agents.length >= 7} className="flex items-center justify-center gap-2 py-4 border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl text-gray-500 hover:text-indigo-500 hover:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/10 transition-all font-bold disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-gray-500 disabled:hover:border-gray-300">
                                <Plus size={20} />
                                {t.add}
                            </button>
@@ -825,12 +930,67 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                     autoFocus
                     value={saveName}
                     onChange={(e) => setSaveName(e.target.value)}
-                    placeholder="Team Name..."
+                    placeholder={t.savePlaceholder}
                     className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none mb-4"
                   />
                   <div className="flex gap-2 justify-end">
                       <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">{t.cancel}</button>
                       <button onClick={handleSaveConfig} disabled={!saveName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{t.save}</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* EXPORT MODAL */}
+      {showExportModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700">
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="font-bold text-lg text-gray-900 dark:text-white">{t.export}</h3>
+                      <button onClick={() => setShowExportModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={20}/></button>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Enter filename (Team Name):</p>
+                  <input 
+                    autoFocus
+                    value={exportName}
+                    onChange={(e) => setExportName(e.target.value)}
+                    placeholder="filename..."
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none mb-4"
+                  />
+                  <div className="flex gap-2 justify-end">
+                      <button onClick={() => setShowExportModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">{t.cancel}</button>
+                      <button onClick={performExport} disabled={!exportName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-2">
+                          <Download size={16} /> {t.export}
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* JSON IMPORT MODAL */}
+      {showJsonImportModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-lg border border-gray-200 dark:border-gray-700">
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="font-bold text-lg text-gray-900 dark:text-white flex items-center gap-2">
+                          <Clipboard className="text-indigo-500" />
+                          Import JSON Config
+                      </h3>
+                      <button onClick={() => setShowJsonImportModal(false)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={20}/></button>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Paste your team configuration JSON here:</p>
+                  <textarea 
+                    autoFocus
+                    value={jsonImportText}
+                    onChange={(e) => setJsonImportText(e.target.value)}
+                    placeholder='{ "agents": [...] }'
+                    className="w-full h-48 border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none mb-4 text-xs font-mono resize-none"
+                  />
+                  <div className="flex gap-2 justify-end">
+                      <button onClick={() => setShowJsonImportModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">{t.cancel}</button>
+                      <button onClick={handlePasteImport} disabled={!jsonImportText.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50 flex items-center gap-2">
+                          <Upload size={16} /> Import
+                      </button>
                   </div>
               </div>
           </div>
@@ -851,7 +1011,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                     <input 
                       autoFocus
                       className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-gray-900 dark:text-white placeholder-gray-400"
-                      placeholder="e.g. System Context"
+                      placeholder={t.noteTitlePlaceholder}
                       value={noteTitle}
                       onChange={e => setNoteTitle(e.target.value)}
                     />
@@ -976,7 +1136,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartMeeting, langCo
                   
                   <div className="mt-8 flex justify-end">
                       <button onClick={() => setIsModSettingsOpen(false)} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold shadow-md transition-all flex items-center gap-2">
-                          <Check size={18} /> Done
+                          <Check size={18} /> {t.done}
                       </button>
                   </div>
               </div>

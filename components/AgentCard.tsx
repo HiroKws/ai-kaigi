@@ -1,14 +1,19 @@
+
 import React from 'react';
 import { Agent } from '../types';
 import { Bot, Mic, Loader2 } from 'lucide-react';
+import { TRANSLATIONS } from '../constants';
 
 interface AgentCardProps {
   agent: Agent;
   isSpeaking: boolean;
   isActive: boolean;
+  langCode: string;
 }
 
-export const AgentCard: React.FC<AgentCardProps> = ({ agent, isSpeaking, isActive }) => {
+export const AgentCard: React.FC<AgentCardProps> = ({ agent, isSpeaking, isActive, langCode }) => {
+  const t = TRANSLATIONS[langCode] || TRANSLATIONS['en'];
+
   return (
     <div 
       className={`
@@ -36,7 +41,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({ agent, isSpeaking, isActiv
       
       {isSpeaking && (
         <div className="mt-2 flex gap-1 items-center text-blue-600 dark:text-blue-400 text-xs font-semibold">
-           <Loader2 className="animate-spin" size={12} /> Speaking...
+           <Loader2 className="animate-spin" size={12} /> {t.speaking}
         </div>
       )}
     </div>

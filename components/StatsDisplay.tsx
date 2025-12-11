@@ -1,7 +1,8 @@
+
 import React from 'react';
 import { BarChart2, Zap } from 'lucide-react';
 import { UsageStats, ModelUsage } from '../types';
-import { MODEL_OPTIONS, TRANSLATIONS } from '../constants';
+import { MODEL_OPTIONS, TRANSLATIONS, MODEL_SHORT_NAMES } from '../constants';
 
 interface StatsDisplayProps {
   stats: UsageStats;
@@ -12,9 +13,15 @@ interface StatsDisplayProps {
 export const StatsDisplay: React.FC<StatsDisplayProps> = ({ stats, langCode, isMobile }) => {
   const t = TRANSLATIONS[langCode] || TRANSLATIONS['en'];
 
-  // Helper to display model label
+  // Helper to display model label with preference for short names (e.g. 2.0lite)
   const getModelLabel = (modelId: string) => {
-    return MODEL_OPTIONS.find(m => m.id === modelId)?.label || 'Unknown';
+    // 1. Try short name map first (for 2.0lite, 2.5lite, etc)
+    if (MODEL_SHORT_NAMES[modelId]) return MODEL_SHORT_NAMES[modelId];
+    // 2. Try option label
+    const option = MODEL_OPTIONS.find(m => m.id === modelId);
+    if (option) return option.label;
+    // 3. Fallback
+    return modelId || 'Unknown';
   };
 
   if (isMobile) return null;
@@ -57,7 +64,7 @@ export const StatsDisplay: React.FC<StatsDisplayProps> = ({ stats, langCode, isM
               })}
             </div>
           ) : (
-            <div className="text-xs text-gray-400 text-center py-2">No active model usage yet.</div>
+            <div className="text-xs text-gray-400 text-center py-2">{t.noStats}</div>
           )}
 
           <div className="pt-3 border-t border-gray-200 dark:border-gray-700">

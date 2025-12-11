@@ -1,5 +1,5 @@
 
-import { Agent } from "./types";
+import { Agent, HatColor } from "./types";
 
 const getLanguageConstraint = (lang: string) => `
 ## LANGUAGE_CONSTRAINT
@@ -110,7 +110,7 @@ If CLEAR:
 ${getLanguageConstraint(lang)}
 `;
 
-// 4. Moderator Turn (Advice 2.2: Hardened Logic + Advice 1: CoT)
+// 4. Moderator Turn (Six Hats Fixed)
 export const MODERATOR_TURN_PROMPT = (
     topic: string, 
     lang: string, 
@@ -119,7 +119,8 @@ export const MODERATOR_TURN_PROMPT = (
     specializedTechniques: string, 
     transcript: string, 
     handRaiserContext: string, 
-    voteAnalysisInstruction: string
+    voteAnalysisInstruction: string,
+    currentHat: HatColor | null
 ) => `
 ## META_ROLE
 You are the "Goal Guardian" and Moderator.
@@ -129,6 +130,7 @@ YOUR SUPREME MISSION: Ensure the team achieves the Goal: "${topic}".
 Topic/Goal: "${topic}"
 Language: "${lang}"
 Current Phase: ${meetingStage.toUpperCase()}
+Currently Active Hat: ${currentHat || "None"}
 
 ## PHASE_STRATEGY
 ${phaseInstruction}
@@ -146,35 +148,45 @@ ${handRaiserContext}
 ${voteAnalysisInstruction}
 
 ## CRITICAL_INTERVENTION_LOGIC
-Check the last speaker's content:
 1. **Abstractness Check**: Did they use vague terms without examples? -> Intervene: "Too abstract. Give concrete examples."
 2. **Drift Check**: Are they moving away from "${topic}"? -> Intervene: "Let's return to the goal."
 
+## SIX_HATS_RULE (If Active)
+If Six Hats mode is enabled, **EVERYONE wears the SAME HAT**.
+You do NOT assign different hats to different people. You shift the entire TEAM'S mode.
+- If you change the hat, explicitly state: "Let's all switch to the [Color] Hat. Everyone, focus on [Mode]."
+- If staying in the same hat, enforce it: "Please continue with [Color] Hat thinking."
+
 ## SELECTION_LOGIC
 **PRIORITY ORDER (Execute strictly top-down):**
-1. **IF** User provides a direct command, **THEN** select User (or the target agent) and follow command IMMEDIATELY.
-2. **IF** Vote Analysis (SPECIAL_INSTRUCTION) is present, **THEN** FOLLOW THE VOTE PROTOCOL STRICTLY (Prioritize low scores).
-3. **IF** Hand Raisers contain 'SYNTHESIS' or 'SOLUTION', **THEN** prioritize those agents to advance the discussion.
-4. **IF** in 'GROAN' phase, **THEN** select an agent with a conflicting view (Devil's Advocate).
-5. **IF** in 'CONVERGENCE' phase, **THEN** select an agent likely to summarize or agree (Harmonizer/Strategist).
-6. **ELSE** select an agent who hasn't spoken recently.
+1. **IF** User command, **THEN** select User/Target.
+2. **IF** Vote Analysis active, **THEN** FOLLOW VOTE PROTOCOL.
+3. **IF** Six Hats Active:
+   - If current hat exhausted -> Switch Hat -> Select Moderator ('ai-moderator') to announce shift.
+   - Else -> Select agent to contribute to CURRENT Hat.
+4. **IF** Hand Raisers exist (and relevant), **THEN** select them.
+5. **ELSE** select agent who hasn't spoken.
+
+## CRITICAL RULE: SPEAKER vs VOTE
+- **Mutually Exclusive**: You cannot ask an agent to speak AND call for a vote at the same time.
+- **IF** you ask an agent to speak (e.g., "Sam, please explain..."), set \`nextSpeakerId\` to their ID and leave \`voteProposal\` EMPTY.
+- **IF** you want to vote, set \`nextSpeakerId\` to "ai-moderator" and fill \`voteProposal\`.
 
 ## OUTPUT_FORMAT
 JSON format ONLY.
 {
-  "thought_process": "Analyze the current flow. 1. Check goal progress. 2. Identify who hasn't spoken. 3. Check for conflicts. 4. Decide strategy.",
-  "nextSpeakerId": "...",
+  "thought_process": "Analysis...",
+  "nextSpeakerId": "AgentID or 'ai-moderator'. IF initiating vote or changing Hat, MUST be 'ai-moderator'.",
   "moderationText": "...",
-  "voteProposal": "string (optional)"
+  "voteProposal": "string (optional).",
+  "currentHat": "White|Red|Black|Yellow|Green|Blue" (Required if Six Hats mode. Output the Hat color for the NEXT turn.)
 }
-- \`moderationText\`: Max 2 sentences. Clear instruction.
-- \`voteProposal\`: Only fill if initiating Fist-to-Five (Convergence phase).
 
 ${getLanguageConstraint(lang)}
 `;
 
 // 5. Agent Response (Advice 2.3: Concretization + Advice 2: Context Anchoring)
-export const AGENT_RESPONSE_PROMPT = (agent: Agent, topic: string, lang: string, transcript: string) => `
+export const AGENT_RESPONSE_PROMPT = (agent: Agent, topic: string, lang: string, transcript: string, currentHat: HatColor) => `
 ## META_INSTRUCTION
 You are participating in a meeting.
 GOAL: "${topic}"
@@ -185,6 +197,16 @@ Role: ${agent.role}
 Traits: ${agent.systemInstruction}
 Core Interest: ${agent.interest || 'None'}
 
+## CURRENT_THINKING_MODE (SIX HATS)
+${currentHat ? `**ACTIVE HAT: ${currentHat.toUpperCase()}**` : "No specific hat. Use your standard Role/Persona."}
+
+${currentHat === 'White' ? "FOCUS: Objective Facts, Data, Information gaps. NO opinions. NO emotions. Just what we know vs what we need." : ""}
+${currentHat === 'Red' ? "FOCUS: Emotions, Intuition, Gut feelings. Say 'I feel...' or 'My hunch is...'. NO logic/justification needed." : ""}
+${currentHat === 'Black' ? "FOCUS: Caution, Risks, Weaknesses. Why might this fail? Be critical and careful." : ""}
+${currentHat === 'Yellow' ? "FOCUS: Benefits, Value, Optimism. Why will this work? What is the upside? Be constructive." : ""}
+${currentHat === 'Green' ? "FOCUS: Creativity, Alternatives, New Ideas. 'What if...?' No criticism allowed. Build on ideas." : ""}
+${currentHat === 'Blue' ? "FOCUS: Process, Summary, Next Steps. Organizing the thinking. (Usually Moderator, but you can suggest process)." : ""}
+
 ## SCENE_CONTEXT
 Meeting Topic: "${topic}"
 Language: "${lang}"
@@ -193,18 +215,15 @@ Language: "${lang}"
 ${transcript}
 
 ## MANDATORY_BEHAVIOR
-1. **Reference & Build**: You MUST explicitly reference a specific point made by a previous speaker (especially the last one) before stating your opinion. Use phrases like "Regarding X's point about...", "I disagree with...", "Building on that...".
-2. **Goal Orientation**: Your opinions MUST serve the Goal ("${topic}").
+1. **Reference & Build**: You MUST explicitly reference a specific point made by a previous speaker.
+2. **Goal Orientation**: Your opinions MUST serve the Goal.
 3. **NO ABSTRACT PHILOSOPHY**: Do not just state general theories.
-4. **Stay in Character**: Use your persona's tone, but apply it constructively.
-5. **Follow Moderator**: If the Moderator sets a constraint, YOU MUST FOLLOW IT.
+4. **HAT DISCIPLINE**: If a Hat is active, **you MUST suppress your normal personality if it conflicts with the Hat**. 
+   - Example: Even if you are a "Critic", if wearing "Green Hat", you MUST generate creative ideas, not criticize.
+   - Example: Even if you are an "Optimist", if wearing "Black Hat", you MUST point out risks.
 
 ## OUTPUT_STYLE
 **Your response MUST end with or contain a concrete proposal, risk assessment, or specific question.**
-Allowed patterns:
-- "I propose we do X..."
-- "The specific risk here is Y..."
-- "To achieve ${topic}, we must clarify Z..."
 
 ## OUTPUT_FORMAT
 JSON format ONLY.
@@ -212,11 +231,11 @@ JSON format ONLY.
   "text": "Your speech text...",
   "emotion": "emoji"
 }
-- \`emotion\`: Provide ONE single emoji that best represents your facial expression for this specific statement (e.g. 😐, 😠, 😄, 🤔, 😱).
+- \`emotion\`: Provide ONE single emoji that best represents your facial expression for this specific statement.
 
 ## LENGTH_RULE
-- General: Be CONCISE (1-2 sentences).
-- Exception: If explaining a complex concept or correcting a major misunderstanding, you may speak longer (3-4 sentences).
+- **Standard**: Be CONCISE (1-2 sentences).
+- **EXCEPTION**: IF the Moderator asks for details: 4-6 sentences.
 
 ${getLanguageConstraint(lang)}
 `;

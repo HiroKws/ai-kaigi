@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Agent, Message, WhiteboardData, MeetingBackend, MeetingMode, ModeratorResponse, Attachment, UsageStats, GenerationResult, NegotiationResult, HandRaiseSignal, ModerationSettings, VoteResult } from "../types";
+import { Agent, Message, WhiteboardData, MeetingBackend, MeetingMode, ModeratorResponse, Attachment, UsageStats, GenerationResult, NegotiationResult, HandRaiseSignal, ModerationSettings, VoteResult, HatColor } from "../types";
 import { AGENTS, DEFAULT_MODEL, MODEL_FALLBACK_CHAIN, DEFAULT_MODERATION_SETTINGS } from "../constants";
 import { DebugLogger } from "../utils/debugLogger";
 import { 
@@ -31,6 +31,69 @@ let globalStats: UsageStats = {
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper for robust JSON parsing
+function safeParseJSON(text: string): any {
+    // 1. Remove markdown code blocks (case insensitive)
+    let cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    
+    // Attempt direct parse first
+    try {
+        return JSON.parse(cleaned);
+    } catch (e) {
+        // Fallback to extraction logic
+    }
+
+    const firstBrace = cleaned.indexOf('{');
+    const firstBracket = cleaned.indexOf('[');
+    
+    // If no structure markers found, fail
+    if (firstBrace === -1 && firstBracket === -1) {
+         console.error("JSON Parse failed: No JSON structure found in text.", text);
+         throw new Error("Failed to parse JSON response: No structure found.");
+    }
+
+    // Determine likely root type based on which appears first
+    const isObject = (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket));
+    const startChar = isObject ? '{' : '[';
+    const endChar = isObject ? '}' : ']';
+
+    // Find all possible start positions for the root element
+    const startIndices: number[] = [];
+    let idx = cleaned.indexOf(startChar);
+    while (idx !== -1) {
+        startIndices.push(idx);
+        idx = cleaned.indexOf(startChar, idx + 1);
+    }
+
+    // Try parsing from each start position to the last closing position
+    // This handles cases like: "Sure! { json } code" or "thought process... { json }"
+    // It iterates from the first '{' found. If that fails (e.g. it was inside the thought process), 
+    // it moves to the next '{'.
+    const lastEnd = cleaned.lastIndexOf(endChar);
+    
+    if (lastEnd === -1) {
+        console.error("JSON Parse failed: No closing marker found.", text);
+        throw new Error("Failed to parse JSON response: Incomplete.");
+    }
+
+    for (const start of startIndices) {
+        if (lastEnd > start) {
+            const candidate = cleaned.substring(start, lastEnd + 1);
+            try {
+                return JSON.parse(candidate);
+            } catch (e) {
+                // If this candidate fails, it might be because the start index was wrong 
+                // (e.g. part of preamble) or the text contains extraneous content between valid JSONs.
+                // We continue to the next start index.
+            }
+        }
+    }
+    
+    // If we are here, strict extraction failed.
+    console.error("JSON Extraction failed after exhaustive search:", text);
+    throw new Error("Failed to parse JSON response from model.");
+}
+
 // Wrapper to handle fallback logic recursively
 async function callGeminiWithFallback(
     ai: GoogleGenAI, 
@@ -43,7 +106,7 @@ async function callGeminiWithFallback(
     
     let currentModel = startModel;
     let attempts = 0;
-    const maxAttempts = 5; // Prevent infinite loops
+    const maxAttempts = 10; // Prevent infinite loops - Increased for deeper fallback chain
 
     while (currentModel && attempts < maxAttempts) {
         try {
@@ -189,6 +252,7 @@ async function callGemini(ai: GoogleGenAI, prompt: string, schema: Schema | unde
       globalStats.total.outputTokens += output;
       globalStats.byModel[modelName].inputTokens += input;
       globalStats.byModel[modelName].outputTokens += output;
+      globalStats.byModel[modelName].outputTokens += output;
       
       if (!response.text) throw new Error(`No response from Gemini (${modelName})`);
       
@@ -244,17 +308,11 @@ export class OfflineBackend implements MeetingBackend {
   async negotiateGoal(topic: string, history: Message[], moderator: Agent, lang: string, model: string, settings?: ModerationSettings, onPrompt?: (prompt: string) => void): Promise<NegotiationResult> {
       if (onPrompt) onPrompt(`(Offline Mock Prompt) Negotiate goal for ${topic}...`);
       await wait(800);
-      if (topic.length < 5) {
-          return {
-              status: 'CLARIFY',
-              text: "User-san, that topic is too vague. Could you please specify a concrete outcome, like 'create 3 ideas'?",
-              usedModel: 'offline'
-          };
-      }
+      // Removed length check for offline mode to improve demo experience
       return {
           status: 'ACCEPTED',
-          text: "Understood, User-san. The goal is clear. We will use the Diamond of Participation model. Let's begin the discussion.",
-          refinedGoal: topic + " (Refined)",
+          text: "Understood. Using Offline Mode. Let's start immediately.",
+          refinedGoal: topic,
           usedModel: 'offline'
       };
   }
@@ -270,26 +328,29 @@ export class OfflineBackend implements MeetingBackend {
       settings?: ModerationSettings, 
       meetingStage?: 'divergence' | 'groan' | 'convergence',
       voteResults?: VoteResult[],
+      currentHat?: HatColor,
       onPrompt?: (prompt: string) => void
   ): Promise<ModeratorResponse & { usedModel: string }> {
     if (onPrompt) onPrompt(`(Offline Mock Prompt) Moderator deciding next speaker... Phase: ${meetingStage}`);
     await wait(800);
     
     // Simulate Fist to Five call
-    if (settings?.fistToFive && meetingStage === 'convergence' && !voteResults && Math.random() > 0.5) {
+    if (settings?.fistToFive && meetingStage === 'convergence' && (!voteResults || voteResults.length === 0) && Math.random() > 0.5) {
         return {
             nextSpeakerId: 'ai-moderator',
             moderationText: "We seem to be converging. Let's do a Fist-to-Five check on this proposal.",
             voteProposal: "Adopt the current plan for " + topic,
-            usedModel: 'offline'
+            usedModel: 'offline',
+            currentHat: currentHat // Preserve current hat
         };
     }
 
-    if (voteResults) {
+    if (voteResults && voteResults.length > 0) {
         return {
             nextSpeakerId: voteResults[0].agentId,
             moderationText: "Thanks for voting. I see some low scores. Let's hear your concerns.",
-            usedModel: 'offline'
+            usedModel: 'offline',
+            currentHat: currentHat
         }
     }
 
@@ -301,18 +362,27 @@ export class OfflineBackend implements MeetingBackend {
         text = `I see you have an objection. Please go ahead.`;
     }
 
+    // Simulate Six Hats switch
+    let newHat = currentHat;
+    if (settings?.sixThinkingHats && Math.random() > 0.8) {
+        const hats: HatColor[] = ['White', 'Red', 'Black', 'Yellow', 'Green', 'Blue'];
+        newHat = hats[Math.floor(Math.random() * hats.length)];
+        text = `Let's switch our thinking mode. Everyone, please put on the ${newHat} Hat.`;
+    }
+
     return {
       nextSpeakerId: nextAgentId,
       moderationText: text,
-      usedModel: 'offline'
+      usedModel: 'offline',
+      currentHat: newHat
     };
   }
 
-  async generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult> {
-    if (onPrompt) onPrompt(`(Offline Mock Prompt) Generating response for ${agent.name}...`);
+  async generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], currentHat?: HatColor, onPrompt?: (prompt: string) => void): Promise<GenerationResult> {
+    if (onPrompt) onPrompt(`(Offline Mock Prompt) Generating response for ${agent.name}... Hat: ${currentHat}`);
     await wait(1500);
     return {
-        text: `${agent.role} perspective: I think we should consider the scalability of this approach regarding ${topic}.`,
+        text: `${agent.role} perspective (${currentHat ? currentHat + ' Hat' : 'Normal'}): I think we should consider the scalability of this approach regarding ${topic}.`,
         usedModel: 'offline',
         emotion: ['🤔', '😄', '😐', '😤'][Math.floor(Math.random() * 4)]
     };
@@ -449,7 +519,7 @@ export class GeminiBackend implements MeetingBackend {
       };
 
       const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.7, files, baseModel);
-      const data = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+      const data = safeParseJSON(result.text);
       const colors = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500'];
       
       return (data.team || []).map((a: any, i: number) => ({
@@ -492,7 +562,8 @@ export class GeminiBackend implements MeetingBackend {
         if (settings) {
             const active = [];
             if (settings.sixThinkingHats) active.push("Six Thinking Hats (FULL CONTROL MODE: Moderator dictates Hat colors)");
-            if (settings.fistToFive) active.push("Fist-to-Five (Voting for Consensus)");
+            // UPDATED: Explicitly state the Average 3.5 rule in the kickoff
+            if (settings.fistToFive) active.push("Fist-to-Five (Voting: Consensus requires Average Score >= 3.5)");
             if (settings.parkingLot) active.push("Parking Lot (For Off-topic)");
             if (settings.reframing) active.push("Reframing (Conflict Resolution)");
             
@@ -516,7 +587,7 @@ export class GeminiBackend implements MeetingBackend {
         };
 
         const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.7, [], model);
-        const parsed = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+        const parsed = safeParseJSON(result.text);
         return { 
             status: parsed.status, 
             text: parsed.text, 
@@ -537,6 +608,7 @@ export class GeminiBackend implements MeetingBackend {
       settings: ModerationSettings = DEFAULT_MODERATION_SETTINGS,
       meetingStage: 'divergence' | 'groan' | 'convergence' = 'divergence',
       voteResults: VoteResult[] = [],
+      currentHat: HatColor = null,
       onPrompt?: (prompt: string) => void
   ): Promise<ModeratorResponse & { usedModel: string }> {
     return runWithRetry(async () => {
@@ -561,19 +633,26 @@ export class GeminiBackend implements MeetingBackend {
               return `${agentName}: Score ${v.score}`;
           }).join("\n");
           
+          // CALCULATE AVERAGE
+          const totalScore = voteResults.reduce((sum, v) => sum + v.score, 0);
+          const averageScore = totalScore / voteResults.length;
+          
           voteAnalysisInstruction = `
             [PROTOCOL: FIST-TO-FIVE CONSENSUS CHECK]
             VOTE RESULTS:
             ${resultsStr}
+            AVERAGE SCORE: ${averageScore.toFixed(2)}
 
             ## LOGIC FLOW (STRICTLY FOLLOW)
-            CASE A: ALL scores are 3 or higher.
-            -> ACTION: Declare "Consensus Reached (Disagree and Commit)". Summarize the decision and move to next topic or wrap up.
+            RULE: Consensus is reached if Average Score >= 3.5.
             
-            CASE B: ANY score is 2 or lower.
-            -> ACTION: Consensus FAILED. Do NOT use majority vote. Do NOT calculate averages.
-            -> NEXT SPEAKER: Select the agent with the LOWEST score (0, 1, or 2).
-            -> MODERATION TEXT: "We do not have consensus yet. [Agent Name], you voted [Score]. What specific condition or change is needed for you to move to a '3' (Consent)?"
+            CASE A: Average is 3.5 or higher.
+            -> ACTION: Declare "Consensus Reached" (Average ${averageScore.toFixed(1)} >= 3.5). Summarize the decision and conclude.
+            
+            CASE B: Average is below 3.5.
+            -> ACTION: Consensus FAILED.
+            -> NEXT SPEAKER: Select the agent with the LOWEST score.
+            -> MODERATION TEXT: "The average is ${averageScore.toFixed(1)}, so we don't have consensus yet (Needs 3.5). [Agent Name], you voted [Score]. What is needed to raise the score?"
                (Focus on "Killer Question": ask for specific conditions to change their vote).
           `;
       }
@@ -582,28 +661,41 @@ export class GeminiBackend implements MeetingBackend {
       let phaseInstruction = "";
       
       if (settings.sixThinkingHats) {
-          // SIX HATS LOGIC (OVERRIDES STANDARD PHASES)
+          // SIX HATS LOGIC (GLOBAL MODE SWITCH)
+          let hatMapping = `
+            1. White Hat (Facts)
+            2. Red Hat (Emotions)
+            3. Black Hat (Cautions)
+            4. Yellow Hat (Benefits)
+            5. Green Hat (Creativity)
+            6. Blue Hat (Process)
+          `;
+          
+          if (lang === 'ja') {
+             hatMapping = `
+                1. White (白): 事実・情報。
+                2. Red (赤): 感情・直感。
+                3. Black (黒): 批判・リスク。
+                4. Yellow (黄): 肯定・利益。
+                5. Green (緑): 創造・アイデア。
+                6. Blue (青): プロセス管理。
+             `;
+          }
+
           phaseInstruction = `
             [SIX THINKING HATS MODE ENABLED]
-            You are controlling the meeting using the Six Thinking Hats method.
-            You must explicitly define which "Hat" the team is wearing for this phase.
+            You are facilitating using the Six Thinking Hats method.
+            **KEY RULE**: Everyone wears the SAME hat at the same time.
             
-            Sequence Guide:
-            1. White Hat (Facts & Info) - Start here.
-            2. Green Hat (Creativity & Alternatives) - Divergence.
-            3. Yellow Hat (Benefits) - Evaluation.
-            4. Black Hat (Cautions) - Evaluation.
-            5. Red Hat (Feelings) - Check-in.
-            6. Blue Hat (Process) - Summary & Next Steps.
+            Current Hat: ${currentHat || "None (Start)"}
             
-            Current Phase Recommendation based on history:
-            - If early, focus on White or Green.
-            - If middle, focus on Yellow or Black.
-            - If late/stuck, use Red or Blue.
+            Strategy:
+            - Decide if the team should STAY on the current hat or SWITCH to a new one.
+            - If switching, select "ai-moderator" as next speaker to announce it.
+            - If staying, select an agent to contribute under the CURRENT hat.
             
-            INSTRUCTION:
-            - In your \`moderationText\`, explicitly state: "Let's put on the [Color] Hat. [Instruction for that hat]."
-            - Select the \`nextSpeakerId\` who can best contribute to the CURRENT Hat color.
+            Definitions:
+            ${hatMapping}
           `;
       } else {
           // STANDARD DIAMOND MODEL
@@ -623,7 +715,7 @@ export class GeminiBackend implements MeetingBackend {
                     1. SUMMARIZE the specific proposal clearly.
                     2. CALL FOR A VOTE.
                     3. OUTPUT \`voteProposal\` field with the proposal text.
-                    4. Set \`moderationText\` to "Let's check consensus on [Proposal]. Fist-to-five. Ready... Go!".
+                    4. Set \`moderationText\` to "Let's check consensus on [Proposal]. Fist-to-five (Average >= 3.5 passes). Ready... Go!".
                     This will trigger a system event where all agents vote simultaneously.
                   `;
               }
@@ -646,7 +738,8 @@ export class GeminiBackend implements MeetingBackend {
           specializedTechniques, 
           transcript, 
           handRaiserContext, 
-          voteAnalysisInstruction
+          voteAnalysisInstruction,
+          currentHat
       );
 
       if (onPrompt) onPrompt(prompt);
@@ -657,23 +750,25 @@ export class GeminiBackend implements MeetingBackend {
           thought_process: { type: Type.STRING, description: "Internal reasoning about the conversation flow." },
           nextSpeakerId: { type: Type.STRING },
           moderationText: { type: Type.STRING },
-          voteProposal: { type: Type.STRING, description: "The specific proposal to vote on. Only used when initiating Fist-to-Five." }
+          voteProposal: { type: Type.STRING, description: "The specific proposal to vote on. Only used when initiating Fist-to-Five." },
+          currentHat: { type: Type.STRING, enum: ["White", "Red", "Black", "Yellow", "Green", "Blue"], nullable: true, description: "If Six Hats mode is active, output the hat color for the NEXT turn." }
         },
         required: ["thought_process", "nextSpeakerId", "moderationText"]
       };
 
       const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.5, files, model);
-      const parsed = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+      const parsed = safeParseJSON(result.text);
       return { ...parsed, usedModel: result.usedModel };
     }, 2);
   }
 
-  async generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult> {
+  async generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], currentHat?: HatColor, onPrompt?: (prompt: string) => void): Promise<GenerationResult> {
     return runWithRetry(async () => {
       // Use summarized transcript logic
       const transcript = await this.getTranscriptWithSummary(history, topic, lang);
 
-      const prompt = AGENT_RESPONSE_PROMPT(agent, topic, lang, transcript);
+      // Pass currentHat to the prompt
+      const prompt = AGENT_RESPONSE_PROMPT(agent, topic, lang, transcript, currentHat || null);
 
       if (onPrompt) onPrompt(prompt);
 
@@ -688,7 +783,7 @@ export class GeminiBackend implements MeetingBackend {
       };
 
       const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.7, files, agent.model || DEFAULT_MODEL);
-      const parsed = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+      const parsed = safeParseJSON(result.text);
       
       return {
           text: parsed.text,
@@ -716,7 +811,7 @@ export class GeminiBackend implements MeetingBackend {
 
           const modelToUse = agent.model || DEFAULT_MODEL;
           const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.3, files, modelToUse);
-          const data = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+          const data = safeParseJSON(result.text);
           
           return {
               agentId: agent.id,
@@ -766,7 +861,7 @@ export class GeminiBackend implements MeetingBackend {
           
           const executeCheck = async (model: string) => {
               const res = await callGemini(this.ai, prompt, schema, 0.3, [], model); 
-              const data = JSON.parse(res.replace(/```json|```/g, "").trim());
+              const data = safeParseJSON(res);
               return data.signals || [];
           };
 
@@ -840,7 +935,7 @@ export class GeminiBackend implements MeetingBackend {
           };
           
           const result = await callGeminiWithFallback(this.ai, prompt, schema, 0.5, [], DEFAULT_MODEL);
-          const data = JSON.parse(result.text.replace(/```json|```/g, "").trim());
+          const data = safeParseJSON(result.text);
           
           // No image generation here as per prompt strategy
 

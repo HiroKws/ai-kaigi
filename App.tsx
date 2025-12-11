@@ -1,8 +1,8 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Play, Pause, Send, MessageSquare, Mic2, User, FileText, Paperclip, X, Eye, Save, Hand, ShieldAlert, Download, FileCheck, Loader2 } from 'lucide-react';
-import { LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, DEFAULT_MODERATION_SETTINGS } from './constants';
-import { Agent, MeetingMode, Attachment, SavedConfig, UsageStats, ModerationSettings } from './types';
+import { LANGUAGES, TRANSLATIONS, MODEL_OPTIONS, DEFAULT_MODEL, DEFAULT_MODERATION_SETTINGS, MODEL_SHORT_NAMES } from './constants';
+import { Agent, MeetingMode, Attachment, SavedConfig, UsageStats, ModerationSettings, HatColor } from './types';
 import { getMeetingBackend } from './services/geminiService';
 import { useMeeting } from './hooks/useMeeting';
 import { ChatLog } from './components/ChatLog';
@@ -11,6 +11,29 @@ import { ErrorBanner } from './components/ErrorBanner';
 import { StatsDisplay } from './components/StatsDisplay';
 import { Whiteboard } from './components/Whiteboard'; // NEW IMPORT
 import { DebugLogger } from './utils/debugLogger';
+
+// Hat Icon Component
+const HatIcon = ({ color }: { color: HatColor }) => {
+    if (!color) return null;
+    
+    let fillClass = "fill-gray-400";
+    let strokeClass = "stroke-gray-600";
+    
+    switch (color) {
+        case 'White': fillClass = "fill-white"; strokeClass = "stroke-gray-400"; break;
+        case 'Red': fillClass = "fill-red-500"; strokeClass = "stroke-red-700"; break;
+        case 'Black': fillClass = "fill-gray-800 dark:fill-gray-600"; strokeClass = "stroke-gray-900 dark:stroke-gray-400"; break;
+        case 'Yellow': fillClass = "fill-yellow-400"; strokeClass = "stroke-yellow-600"; break;
+        case 'Green': fillClass = "fill-green-500"; strokeClass = "stroke-green-700"; break;
+        case 'Blue': fillClass = "fill-blue-500"; strokeClass = "stroke-blue-700"; break;
+    }
+
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className={`w-8 h-8 ${fillClass} ${strokeClass} stroke-2 drop-shadow-md`}>
+             <path strokeLinecap="round" strokeLinejoin="round" d="M3.5 10h17M3.5 10a1.5 1.5 0 0 1 1.5-1.5h14a1.5 1.5 0 0 1 1.5 1.5M5 8.5V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2.5" />
+        </svg>
+    );
+};
 
 const App: React.FC = () => {
   // Global Settings
@@ -61,7 +84,7 @@ const App: React.FC = () => {
   // Hook handles all meeting logic
   const {
     agents, messages, whiteboardData,
-    isActive, isPaused, setIsPaused, isWaitingForUser, isThinking, error, currentSpeakerId, handRaisedQueue, agentActiveModels, moderatorModel, debugPrompt,
+    isActive, isPaused, setIsPaused, isWaitingForUser, isThinking, error, currentSpeakerId, handRaisedQueue, agentActiveModels, moderatorModel, debugPrompt, currentHat,
     startMeeting, stopMeeting, togglePause, addMessage, addFiles, generateMinutes
   } = useMeeting(backend, langCode, debugMode, startParams?.settings || DEFAULT_MODERATION_SETTINGS);
 
@@ -215,9 +238,20 @@ const App: React.FC = () => {
       return 'text-gray-500';
   };
 
-  // Helper to display model label
+  // Helper to display model label (Robust fallback)
   const getModelLabel = (modelId: string) => {
-      return MODEL_OPTIONS.find(m => m.id === modelId)?.label || 'Unknown';
+      // 1. Try to find nice label in options
+      const option = MODEL_OPTIONS.find(m => m.id === modelId);
+      if (option) return option.label;
+      // 2. Try short names (covers backup models like 2.0 lite)
+      if (MODEL_SHORT_NAMES[modelId]) return MODEL_SHORT_NAMES[modelId];
+      // 3. Fallback to ID
+      return modelId || 'Unknown';
+  };
+
+  // Helper for Badges - Prefers short names like "2.5lite"
+  const getBadgeLabel = (modelId: string) => {
+      return MODEL_SHORT_NAMES[modelId] || getModelLabel(modelId);
   };
 
   // Organize agents for UI
@@ -258,7 +292,7 @@ const App: React.FC = () => {
       ) : (
         <>
             {/* MEETING VIEW TOP BAR */}
-            <div className="absolute top-0 left-0 w-full z-30 p-4 flex justify-between items-start pointer-events-none">
+            <div className="absolute top-0 left-0 w-full z-[80] p-4 flex justify-between items-start pointer-events-none">
               <div className="flex gap-2 pointer-events-auto">
                   {!isMobile && (
                       <button onClick={() => setShowLog(!showLog)} className="bg-white/80 dark:bg-black/40 backdrop-blur-md border border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-white px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium transition-colors shadow-sm">
@@ -310,18 +344,26 @@ const App: React.FC = () => {
                   </div>
 
                   {/* TOP: Moderator */}
-                  <div className={`absolute top-16 left-1/2 -translate-x-1/2 flex flex-col items-center transition-all duration-500 ${isModeratorSpeaking ? 'scale-110 z-50' : 'opacity-70 scale-90 z-20'}`}>
+                  <div className={`absolute top-16 left-1/2 -translate-x-1/2 flex flex-col items-center transition-all duration-500 ${isModeratorSpeaking ? 'scale-110 z-[70]' : 'opacity-70 scale-90 z-20'}`}>
                       <div className="relative">
                         <div className={`relative w-16 h-16 rounded-full bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)] transition-all duration-300 ${isModeratorSpeaking ? 'border-4 border-indigo-500' : 'border-2 border-indigo-200 dark:border-indigo-800'}`}>
                             {/* Thinking Spinner for Moderator */}
                             {isModeratorSpeaking && isThinking && <div className="absolute -inset-1 rounded-full border-4 border-t-indigo-500 dark:border-t-white border-transparent animate-spin" />}
                             <Mic2 size={32} className="text-indigo-600 dark:text-indigo-200" />
                         </div>
+                        
+                        {/* MODERATOR HAT ICON */}
+                        {currentHat && (
+                            <div className="absolute -top-6 -right-2 transform rotate-12 z-50 animate-in fade-in zoom-in slide-in-from-top-4">
+                                <HatIcon color={currentHat} />
+                            </div>
+                        )}
+
                         {/* Moderator Downgrade Indicator */}
                         {isModeratorDowngraded && (
                            <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-orange-100 dark:bg-orange-900/80 text-orange-600 dark:text-orange-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-orange-200 dark:border-orange-700 whitespace-nowrap shadow-sm flex items-center gap-1 z-30" title={t.downgradeAlert}>
                                <ShieldAlert size={8} />
-                               {getModelLabel(moderatorModel)}
+                               {getBadgeLabel(moderatorModel)}
                            </div>
                         )}
                       </div>
@@ -331,7 +373,7 @@ const App: React.FC = () => {
                       </div>
                       {/* Moderator Bubble */}
                       {(isModeratorSpeaking || getLatestMessage('ai-moderator')) && (
-                          <div className="absolute top-20 w-[400px] bg-white dark:bg-indigo-900/90 text-gray-800 dark:text-indigo-100 p-5 rounded-2xl text-base shadow-xl text-center border border-indigo-100 dark:border-indigo-500/50 animate-in fade-in zoom-in slide-in-from-top-4 z-50">
+                          <div className="absolute top-20 w-[400px] bg-white dark:bg-indigo-900/90 text-gray-800 dark:text-indigo-100 p-5 rounded-2xl text-base shadow-xl text-center border border-indigo-100 dark:border-indigo-500/50 animate-in fade-in zoom-in slide-in-from-top-4 z-[70]">
                               {isModeratorSpeaking && isThinking ? (
                                   debugMode && debugPrompt ? (
                                       <DebugPromptBox prompt={debugPrompt} />
@@ -345,8 +387,8 @@ const App: React.FC = () => {
                       )}
                   </div>
 
-                  {/* LEFT SIDE AGENTS */}
-                  <div className="absolute left-6 top-32 bottom-32 flex flex-col justify-evenly w-auto pointer-events-none">
+                  {/* LEFT SIDE AGENTS - Vertically Distributed, Left Aligned */}
+                  <div className="absolute left-6 top-20 bottom-40 flex flex-col justify-evenly w-auto pointer-events-none z-20">
                       {leftAgents.map(agent => {
                           const isSpeaking = currentSpeakerId === agent.id;
                           const latestMsg = getLatestMessage(agent.id);
@@ -360,17 +402,17 @@ const App: React.FC = () => {
                           const showBubble = isSpeaking || latestMsg;
 
                           return (
-                              <div key={agent.id} className={`group relative flex items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? 'translate-x-4 scale-105 z-50' : 'opacity-80 hover:opacity-100 z-20'}`}>
+                              <div key={agent.id} className={`group relative flex items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? 'translate-x-4 scale-105 z-[60]' : 'opacity-80 hover:opacity-100 z-20'}`}>
                                   {/* Tooltip */}
-                                  <div className="absolute left-20 ml-1 w-64 p-3 bg-white dark:bg-black/90 text-gray-800 dark:text-gray-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-md">
+                                  <div className="absolute left-20 ml-1 w-64 p-3 bg-white dark:bg-black/90 text-gray-800 dark:text-gray-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-[70] border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-md">
                                       <div className="font-bold text-gray-900 dark:text-white mb-1 border-b border-gray-200 dark:border-gray-700 pb-1">{agent.name}</div>
                                       <div className="italic text-gray-500 dark:text-gray-400">{agent.role}</div>
                                       <div className="text-purple-400 mt-1 flex gap-1"><Hand size={10} /> {agent.interest}</div>
                                       <div className="mt-2 text-[10px] leading-relaxed line-clamp-6">{agent.systemInstruction}</div>
                                   </div>
 
-                                  <div className="flex flex-col items-center gap-1">
-                                      {/* NAME (TOP) */}
+                                  <div className="flex flex-col items-start gap-1">
+                                      {/* NAME (TOP) - Left Aligned */}
                                       <span className={`text-[10px] font-bold uppercase tracking-wider bg-white/80 dark:bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm shadow-sm ${textClass}`}>
                                           {agent.name}
                                       </span>
@@ -381,6 +423,13 @@ const App: React.FC = () => {
                                               {/* EMOTION EMOJI OR DEFAULT */}
                                               {agent.currentEmotion || '😐'}
                                               
+                                              {/* HAT ICON - LEFT SIDE */}
+                                              {currentHat && (
+                                                  <div className="absolute -top-5 -right-3 transform rotate-12 z-50 animate-in fade-in zoom-in slide-in-from-top-4">
+                                                      <HatIcon color={currentHat} />
+                                                  </div>
+                                              )}
+
                                               {/* Hand Raised Indicator */}
                                               {isHandRaised && (
                                                   <div className="absolute -top-2 -right-2 bg-yellow-400 text-yellow-900 p-1 rounded-full shadow-lg animate-bounce z-40 border-2 border-white dark:border-gray-900">
@@ -393,15 +442,15 @@ const App: React.FC = () => {
                                       {/* MODEL NAME (BOTTOM) */}
                                       <div className={`text-[9px] font-medium px-1.5 py-0.5 rounded border flex items-center gap-1 backdrop-blur-sm shadow-sm whitespace-nowrap ${isDowngraded ? 'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/50 dark:text-orange-200' : 'bg-gray-100 text-gray-500 border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700'}`}>
                                           {isDowngraded && <ShieldAlert size={8} />}
-                                          {getModelLabel(activeModel)}
+                                          {getBadgeLabel(activeModel)}
                                       </div>
                                   </div>
                                   
                                   {showBubble && (
-                                      <div className={`absolute left-14 md:left-24 ml-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-4 lg:p-4 rounded-3xl rounded-tl-none shadow-xl text-sm lg:text-base z-30 
+                                      <div className={`absolute left-14 md:left-24 ml-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-4 lg:p-4 rounded-3xl rounded-tl-none shadow-xl text-sm lg:text-base 
                                           w-[calc(45vw_-_5rem)] min-w-[calc(45vw_-_5rem)] max-w-none
                                           lg:w-[calc(33vw_-_9rem)] lg:min-w-0 lg:max-w-none
-                                          border-2 ${borderClass} animate-in fade-in slide-in-from-left-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
+                                          border-2 ${borderClass} animate-in fade-in slide-in-from-left-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50 z-[60]' : 'z-30'}`}>
                                           <span className={`block font-bold text-xs mb-1 ${textClass}`}>{agent.name}</span>
                                           {isSpeaking && isThinking ? (
                                               debugMode && debugPrompt ? (
@@ -419,8 +468,8 @@ const App: React.FC = () => {
                       })}
                   </div>
 
-                  {/* RIGHT SIDE AGENTS */}
-                  <div className="absolute right-6 top-32 bottom-32 flex flex-col justify-evenly w-auto items-end pointer-events-none">
+                  {/* RIGHT SIDE AGENTS - Vertically Distributed, Right Aligned */}
+                  <div className="absolute right-6 top-20 bottom-40 flex flex-col justify-evenly w-auto items-end pointer-events-none z-20">
                       {rightAgents.map(agent => {
                           const isSpeaking = currentSpeakerId === agent.id;
                           const latestMsg = getLatestMessage(agent.id);
@@ -434,17 +483,17 @@ const App: React.FC = () => {
                           const showBubble = isSpeaking || latestMsg;
 
                           return (
-                              <div key={agent.id} className={`group relative flex flex-row-reverse items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? '-translate-x-4 scale-105 z-50' : 'opacity-80 hover:opacity-100 z-20'}`}>
+                              <div key={agent.id} className={`group relative flex flex-row-reverse items-center transition-all duration-500 pointer-events-auto ${isSpeaking ? '-translate-x-4 scale-105 z-[60]' : 'opacity-80 hover:opacity-100 z-20'}`}>
                                   {/* Tooltip */}
-                                  <div className="absolute right-20 mr-1 w-64 p-3 bg-white dark:bg-black/90 text-gray-800 dark:text-gray-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-md text-right">
+                                  <div className="absolute right-20 mr-1 w-64 p-3 bg-white dark:bg-black/90 text-gray-800 dark:text-gray-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-[70] border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-md text-right">
                                       <div className="font-bold text-gray-900 dark:text-white mb-1 border-b border-gray-200 dark:border-gray-700 pb-1">{agent.name}</div>
                                       <div className="italic text-gray-500 dark:text-gray-400">{agent.role}</div>
                                       <div className="text-purple-400 mt-1 flex justify-end gap-1"><Hand size={10} /> {agent.interest}</div>
                                       <div className="mt-2 text-[10px] leading-relaxed line-clamp-6">{agent.systemInstruction}</div>
                                   </div>
 
-                                  <div className="flex flex-col items-center gap-1">
-                                      {/* NAME (TOP) */}
+                                  <div className="flex flex-col items-end gap-1">
+                                      {/* NAME (TOP) - Right Aligned */}
                                       <span className={`text-[10px] font-bold uppercase tracking-wider bg-white/80 dark:bg-black/50 px-2 py-0.5 rounded backdrop-blur-sm shadow-sm ${textClass}`}>
                                           {agent.name}
                                       </span>
@@ -455,6 +504,13 @@ const App: React.FC = () => {
                                               {/* EMOTION EMOJI OR DEFAULT */}
                                               {agent.currentEmotion || '😐'}
                                               
+                                              {/* HAT ICON - RIGHT SIDE */}
+                                              {currentHat && (
+                                                  <div className="absolute -top-5 -left-3 transform -rotate-12 z-50 animate-in fade-in zoom-in slide-in-from-top-4">
+                                                      <HatIcon color={currentHat} />
+                                                  </div>
+                                              )}
+
                                               {/* Hand Raised Indicator */}
                                               {isHandRaised && (
                                                   <div className="absolute -top-2 -left-2 bg-yellow-400 text-yellow-900 p-1 rounded-full shadow-lg animate-bounce z-40 border-2 border-white dark:border-gray-900">
@@ -467,15 +523,15 @@ const App: React.FC = () => {
                                       {/* MODEL NAME (BOTTOM) */}
                                       <div className={`text-[9px] font-medium px-1.5 py-0.5 rounded border flex items-center gap-1 backdrop-blur-sm shadow-sm whitespace-nowrap ${isDowngraded ? 'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/50 dark:text-orange-200' : 'bg-gray-100 text-gray-500 border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700'}`}>
                                           {isDowngraded && <ShieldAlert size={8} />}
-                                          {getModelLabel(activeModel)}
+                                          {getBadgeLabel(activeModel)}
                                       </div>
                                   </div>
                                   
                                   {showBubble && (
-                                      <div className={`absolute right-14 md:right-24 mr-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-4 lg:p-4 rounded-3xl rounded-tr-none shadow-xl text-sm lg:text-base z-30 
+                                      <div className={`absolute right-14 md:right-24 mr-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-4 lg:p-4 rounded-3xl rounded-tr-none shadow-xl text-sm lg:text-base 
                                           w-[calc(45vw_-_5rem)] min-w-[calc(45vw_-_5rem)] max-w-none
                                           lg:w-[calc(33vw_-_9rem)] lg:min-w-0 lg:max-w-none
-                                          border-2 ${borderClass} animate-in fade-in slide-in-from-right-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50' : ''}`}>
+                                          border-2 ${borderClass} animate-in fade-in slide-in-from-right-4 ${isSpeaking ? 'ring-2 ring-indigo-500/50 z-[60]' : 'z-30'}`}>
                                           <span className={`block font-bold text-xs mb-1 text-right ${textClass}`}>{agent.name}</span>
                                           {isSpeaking && isThinking ? (
                                               debugMode && debugPrompt ? (
@@ -500,7 +556,7 @@ const App: React.FC = () => {
               <div className="flex-1 z-10 p-4 pt-16 pb-32 overflow-hidden flex flex-col items-center w-full">
                   <div className="w-full max-w-3xl flex-1 bg-white/90 dark:bg-gray-800/90 backdrop-blur-md rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col shadow-xl mb-4">
                       <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 font-bold text-center text-gray-700 dark:text-gray-200 shrink-0">
-                          Session Log
+                          {t.sessionLog}
                       </div>
                       <ChatLog messages={messages} agents={agents} />
                   </div>
@@ -512,28 +568,28 @@ const App: React.FC = () => {
                              isLoading={whiteboardData.isGenerating || false} 
                              langCode={langCode} 
                           />
-                          <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded">Whiteboard</div>
+                          <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded">{t.whiteboardTitle}</div>
                       </div>
                   )}
               </div>
             )}
 
-            {/* BOTTOM CONTROLS (Fixed) */}
-            <div className="absolute bottom-0 left-0 w-full z-40 bg-gradient-to-t from-white via-gray-50 to-transparent dark:from-black dark:via-gray-900 pt-12 pb-6 px-4">
-                <div className="max-w-3xl mx-auto flex flex-col gap-4">
+            {/* BOTTOM CONTROLS (Fixed, No Gradient, Allow Overlap) */}
+            <div className="absolute bottom-0 left-0 w-full z-40 pb-6 px-4 pointer-events-none flex flex-col items-center justify-end">
+                <div className="max-w-3xl w-full flex flex-col gap-4 pointer-events-auto">
                     
                     {/* User Representation (Center) */}
                     {!showLog && !isMobile && (
-                        <div className="flex flex-col items-center justify-center -mb-8 relative z-10">
+                        <div className="flex flex-col items-center justify-center -mb-8 relative z-50">
                             {/* User Bubble */}
                             {getLatestMessage('user') && (
-                                <div className="mb-4 bg-indigo-600 text-white p-4 rounded-2xl rounded-br-none shadow-xl text-base z-30 w-fit max-w-[80vw] md:max-w-[600px] animate-in fade-in slide-in-from-bottom-4 border-2 border-indigo-400">
+                                <div className="mb-4 bg-indigo-600 text-white p-4 rounded-2xl rounded-br-none shadow-xl text-base z-[60] w-fit max-w-[80vw] md:max-w-[600px] animate-in fade-in slide-in-from-bottom-4 border-2 border-indigo-400">
                                     <span className="block font-bold text-xs mb-1 text-right text-indigo-200">{t.you}</span>
                                     {getLatestMessage('user')}
                                 </div>
                             )}
 
-                            <div className={`relative w-16 h-16 rounded-full bg-indigo-600 border-4 ${isWaitingForUser ? 'border-transparent' : 'border-gray-100 dark:border-gray-900'} shadow-2xl flex items-center justify-center text-white transform hover:scale-105 transition-transform cursor-default`}>
+                            <div className={`relative w-16 h-16 rounded-full bg-indigo-600 border-4 ${isWaitingForUser ? 'border-transparent' : 'border-gray-100 dark:border-gray-900'} shadow-2xl flex items-center justify-center text-white transform hover:scale-105 transition-transform cursor-default z-[60]`}>
                                 {isWaitingForUser && (
                                     <>
                                        {/* Outer Spinner for Visibility */}
@@ -542,12 +598,19 @@ const App: React.FC = () => {
                                     </>
                                 )}
                                 <User size={32} className="relative z-20" />
+                                
+                                {/* HAT ICON - USER (CENTER) */}
+                                {currentHat && (
+                                    <div className="absolute -top-5 -right-3 transform rotate-12 z-50 animate-in fade-in zoom-in slide-in-from-top-4">
+                                        <HatIcon color={currentHat} />
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
 
                     {/* Input Area */}
-                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-2 shadow-2xl relative z-0 flex flex-col gap-2">
+                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-2 shadow-2xl relative z-50 flex flex-col gap-2">
                         <form onSubmit={handleUserMessage} className="flex items-center gap-2">
                             <label className="p-3 text-gray-400 hover:text-gray-600 dark:hover:text-white cursor-pointer transition-colors rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">
                                 <Paperclip size={20} />
@@ -588,7 +651,7 @@ const App: React.FC = () => {
 
       {/* Save Modal */}
        {showSaveModal && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
               <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700 scale-100">
                   <div className="flex justify-between items-center mb-4">
                       <h3 className="font-bold text-lg text-gray-900 dark:text-white">{t.save}</h3>
@@ -598,12 +661,12 @@ const App: React.FC = () => {
                     autoFocus
                     value={saveName}
                     onChange={(e) => setSaveName(e.target.value)}
-                    placeholder="e.g. Current Team Snapshot"
+                    placeholder={t.savePlaceholder}
                     className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-none mb-4"
                   />
                   <div className="flex gap-2 justify-end">
-                      <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">Cancel</button>
-                      <button onClick={handleSaveTeam} disabled={!saveName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">Save</button>
+                      <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">{t.cancel}</button>
+                      <button onClick={handleSaveTeam} disabled={!saveName.trim()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50">{t.save}</button>
                   </div>
               </div>
           </div>
@@ -611,7 +674,7 @@ const App: React.FC = () => {
 
       {/* End Meeting Confirmation Modal */}
       {showEndConfirmModal && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
               <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-gray-200 dark:border-gray-700 scale-100">
                   <div className="flex justify-between items-center mb-4">
                       <h3 className="font-bold text-lg text-gray-900 dark:text-white flex items-center gap-2">

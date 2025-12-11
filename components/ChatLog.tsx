@@ -2,14 +2,27 @@
 import React, { useEffect, useRef } from 'react';
 import { Message, Agent } from '../types';
 import { User, Sparkles, Mic2 } from 'lucide-react';
+import { TRANSLATIONS } from '../constants'; // Import Translations
 
 interface ChatLogProps {
   messages: Message[];
   agents: Agent[];
+  // We can infer langCode from context or just default to EN if not passed prop, 
+  // but cleanly we should rely on what we have. 
+  // Since we are not passing langCode to ChatLog in App.tsx currently, 
+  // let's try to detect it or just use a safe default for the empty state.
+  // Actually, App.tsx DOES not pass langCode to ChatLog.
+  // I will assume English for now to avoid breaking the build with prop mismatch,
+  // or I can check navigator again inside here.
 }
 
 export const ChatLog: React.FC<ChatLogProps> = ({ messages, agents }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Quick client-side detection to match App.tsx default logic if we want to be consistent
+  // without changing props.
+  const langCode = (typeof window !== 'undefined' && window.navigator && window.navigator.language.split('-')[0]) || 'en';
+  const t = TRANSLATIONS[langCode] || TRANSLATIONS['en'];
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -35,7 +48,7 @@ export const ChatLog: React.FC<ChatLogProps> = ({ messages, agents }) => {
       {messages.length === 0 && (
         <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-500 opacity-50">
           <Sparkles size={48} className="mb-4" />
-          <p className="text-lg">Start a topic to begin the meeting</p>
+          <p className="text-lg">{t.startTopic}</p>
         </div>
       )}
       

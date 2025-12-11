@@ -67,11 +67,15 @@ export interface UsageStats {
 
 export type MeetingMode = 'multi-agent' | 'offline';
 
+export type HatColor = 'White' | 'Red' | 'Black' | 'Yellow' | 'Green' | 'Blue' | null;
+
 export interface ModeratorResponse {
   nextSpeakerId: string;
   moderationText: string;
   // If present, triggers the voting phase with this proposal
   voteProposal?: string;
+  // If Six Hats is active, this defines the GLOBAL hat for the team
+  currentHat?: HatColor;
 }
 
 // Wrapper to generation result including metadata
@@ -132,10 +136,20 @@ export interface MeetingBackend {
       settings?: ModerationSettings, 
       meetingStage?: 'divergence' | 'groan' | 'convergence',
       voteResults?: VoteResult[], // Pass previous vote results for analysis
+      currentHat?: HatColor, // Pass current hat state
       onPrompt?: (prompt: string) => void
   ): Promise<ModeratorResponse & { usedModel?: string }>;
   
-  generateAgentResponse(agent: Agent, topic: string, history: Message[], allAgents: Agent[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<GenerationResult>;
+  generateAgentResponse(
+      agent: Agent, 
+      topic: string, 
+      history: Message[], 
+      allAgents: Agent[], 
+      lang: string, 
+      files: Attachment[], 
+      currentHat?: HatColor, // Pass current hat constraint
+      onPrompt?: (prompt: string) => void
+  ): Promise<GenerationResult>;
   
   // New method specifically for Fist-to-Five voting
   generateFistToFiveVote(agent: Agent, proposal: string, topic: string, history: Message[], lang: string, files: Attachment[], onPrompt?: (prompt: string) => void): Promise<VoteResult & { usedModel: string }>;

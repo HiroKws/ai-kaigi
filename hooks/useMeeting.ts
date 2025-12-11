@@ -1,6 +1,6 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Agent, Message, WhiteboardData, MeetingBackend, Attachment, UsageStats, HandRaiseSignal, ModerationSettings, VoteResult } from '../types';
+import { Agent, Message, WhiteboardData, MeetingBackend, Attachment, UsageStats, HandRaiseSignal, ModerationSettings, VoteResult, HatColor } from '../types';
 import { INITIAL_WHITEBOARD_STATE, DEFAULT_MODEL, MODEL_SHORT_NAMES, TRANSLATIONS, DEFAULT_MODERATION_SETTINGS } from '../constants';
 
 // Helper to generate localized kickoff message without API call
@@ -64,6 +64,9 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
   const [nextSpeakerId, setNextSpeakerId] = useState<string | null>(null);
   const [handRaisedQueue, setHandRaisedQueue] = useState<string[]>([]); 
   
+  // Track Global Six Hats State
+  const [currentHat, setCurrentHat] = useState<HatColor>(null);
+
   // Internal State
   const [turnPhase, setTurnPhase] = useState<'start' | 'goal_setting' | 'intro' | 'moderating' | 'speaking' | 'voting'>('start');
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,15 +90,15 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
   // --- STABLE STATE REFERENCES ---
   const stateRef = useRef({ 
       messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel,
-      isActive, isPaused, debugMode, meetingStage, settings, whiteboardData
+      isActive, isPaused, debugMode, meetingStage, settings, whiteboardData, currentHat
   });
   
   useEffect(() => {
     stateRef.current = { 
         messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel,
-        isActive, isPaused, debugMode, meetingStage, settings, whiteboardData
+        isActive, isPaused, debugMode, meetingStage, settings, whiteboardData, currentHat
     };
-  }, [messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel, isActive, isPaused, debugMode, meetingStage, settings, whiteboardData]);
+  }, [messages, agents, files, turnPhase, nextSpeakerId, handRaisedQueue, topic, defaultModel, moderatorModel, isActive, isPaused, debugMode, meetingStage, settings, whiteboardData, currentHat]);
 
 
   // --- ACTIONS ---
@@ -112,6 +115,12 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
   }, []);
 
   const startMeeting = useCallback((newTopic: string, team: Agent[], initialFiles: Attachment[] = [], model: string = DEFAULT_MODEL) => {
+    // FORCE RESET TIMER
+    if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+    }
+    
     setTopic(newTopic);
     setAgents(team);
     setFiles(initialFiles);
@@ -131,8 +140,8 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
     votingQueueRef.current = [];
     voteResultsRef.current = [];
     currentVoteProposalRef.current = "";
+    setCurrentHat(null); // Reset Hat
     isProcessingRef.current = false; // Reset lock
-    timerRef.current = null;
     
     setStatus('Negotiating goal...');
     setAgentActiveModels({});
@@ -368,6 +377,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
                 state.settings,
                 state.meetingStage,
                 voteResultsRef.current,
+                state.currentHat, // Pass current hat
                 handlePromptUpdate
             );
             
@@ -384,6 +394,17 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
 
             handRaiseSignalsRef.current = [];
             setHandRaisedQueue([]);
+
+            // Update Current Hat State
+            if (decision.currentHat) {
+                setCurrentHat(decision.currentHat);
+            }
+
+            // LOGIC FIX: If the model assigns a specific next speaker (other than itself or user),
+            // it means it wants that person to speak. We should ignore any hallucinated voteProposal.
+            if (decision.nextSpeakerId && decision.nextSpeakerId !== 'ai-moderator' && decision.nextSpeakerId !== 'user') {
+                 decision.voteProposal = undefined;
+            }
 
             if (decision.voteProposal && state.settings.fistToFive) {
                 currentVoteProposalRef.current = decision.voteProposal;
@@ -403,6 +424,8 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
                 timerRef.current = setTimeout(() => {
                     timerRef.current = null;
                     setCurrentSpeakerId(null);
+                    // Manually sync ref for immediate loop
+                    stateRef.current.turnPhase = 'voting';
                     isProcessingRef.current = false; // Unlock
                     runMeetingLoop();
                 }, readTime);
@@ -428,6 +451,11 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
                 timerRef.current = null;
                 setCurrentSpeakerId(null);
                 setTurnPhase('speaking');
+                
+                // CRITICAL FIX: Update stateRef directly before calling runMeetingLoop
+                // This prevents the loop from running with stale state ('moderating') if re-render is pending
+                stateRef.current.turnPhase = 'speaking';
+                
                 isProcessingRef.current = false; // Unlock
                 runMeetingLoop();
             }, readTime);
@@ -462,6 +490,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
                     state.agents, 
                     langCode, 
                     state.files, 
+                    state.currentHat, // Pass current hat constraint
                     handlePromptUpdate
                 );
                 
@@ -496,12 +525,17 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
                     timerRef.current = null;
                     setCurrentSpeakerId(null);
                     setTurnPhase('moderating');
+                    
+                    // CRITICAL FIX: Update stateRef directly before calling runMeetingLoop
+                    stateRef.current.turnPhase = 'moderating';
+                    
                     isProcessingRef.current = false; // Unlock
                     runMeetingLoop();
                 }, readTime);
             } else {
                 // Agent not found or something went wrong
                 setTurnPhase('moderating');
+                stateRef.current.turnPhase = 'moderating';
                 isProcessingRef.current = false;
                 runMeetingLoop();
             }
@@ -523,6 +557,9 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
       if (!isActive || isPaused || isWaitingForUser) return;
       
       // Only start if no timer is pending AND not currently processing
+      // REMOVED dependency on messages.length and turnPhase to prevent "Double Speaking" bugs.
+      // The loop is recursive (calls setTimeout to call itself), so it survives as long as 'isActive' is true.
+      // This useEffect primarily acts as a "Kickstarter" when the meeting resumes from pause or initial start.
       if (!timerRef.current && !isProcessingRef.current) {
           timerRef.current = setTimeout(() => {
               timerRef.current = null;
@@ -530,10 +567,10 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
           }, 100);
       }
       
-      // CRITICAL: We DO NOT clean up the timer here anymore.
-      // This prevents the transition timers (e.g. 1500ms wait before Intro) from being cancelled
-      // when 'messages' or other state updates trigger a re-render.
-  }, [isActive, isPaused, isWaitingForUser, turnPhase, messages.length, runMeetingLoop]);
+      // Cleanup: We intentionally DO NOT clear the timer here if the deps change, 
+      // because we want the scheduled turn to execute even if the UI re-renders.
+      // The timer is only cleared on 'startMeeting' (reset) or 'stopMeeting' (halt).
+  }, [isActive, isPaused, isWaitingForUser, runMeetingLoop, turnPhase]); // Added turnPhase to re-kick loop if stuck
 
   // Cleanup on unmount only
   useEffect(() => {
@@ -561,6 +598,7 @@ export const useMeeting = (backend: MeetingBackend, langCode: string, debugMode:
       agentActiveModels,
       moderatorModel,
       debugPrompt,
+      currentHat, // Export current hat state
       startMeeting,
       stopMeeting,
       togglePause,
